@@ -11,3 +11,7 @@ establishments. Subsequently, we will utilize a suite of models to rigorously an
 which will also include an assessment of potential losses stemming from the COVID-19 pandemic.
 Lastly, these models have been applied to estimate the future sales for the year 2023, for which
 data is presently unavailable.
+
+Students:
+Patrick Costa 858156
+Matteo Mondini 902853
