@@ -13,5 +13,9 @@ Lastly, these models have been applied to estimate the future sales for the year
 data is presently unavailable.
 
 Students:
+
+
 Patrick Costa 858156
+
+
 Matteo Mondini 902853
