@@ -1,0 +1,2923 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+## Introduction to model used in the pre-covid time series
+
+SARIMA with days: In this model, an attempt is made to model weekly seasonality by introducing dummy variables indicating the days of the week.
+
+SARIMA with Fourier terms: In this model, an attempt is made to model both weekly and annual seasonality by introducing Fourier terms (3 for weekly seasonality and 15 for annual seasonality).
+
+SARIMA with all other regressors: Fourier terms + other available regressors. In summary, the approach of the last model may be appropriate if there is a clear justification for each regressor, and if the model indeed provides better forecasting accuracy compared to simpler models.
+
+TBATS, ETS, Holt-Winters (no regressors)
+
+Bayesian models require variables to perform well.
+
+Bayesian model with lag 1 + delays.
+
+Bayesian lag 1, 2, 7 + other variables.
+
+Machine learning approach: an optimized random forest with the best variables found.
+
+```{r}
+library(forecast)
+library(dplyr)
+library(xgboost)
+library(readr)
+library(stringr)
+library(caret)
+library(randomForest)
+library(prophet)
+library(rstanarm)
+library(ggplot2)
+library(zoo)
+library(car)
+library(fastDummies)
+```
+
+First of all, we chose this time frame because I wanted a clean dataset unaffected by COVID, in order to assess which model performs better. I planned to apply the selected model to March-May and estimate how the gross total would have behaved if the pandemic had not occurred.
+
+On the other hand, restaurant E004 was chosen for its stability, absence of null values, and ease of analysis.
+
+start_date \<- as.Date("2018-09-01")
+
+end_date \<- as.Date("2020-02-19")
+
+\
+To have a stable series that would not be affected by the effects of COVID, the choice was made to start from March 20th or 21st because the first case of COVID in Codogno, Italy was identified around that time.
+
+A complete lockdown was implemented on March 9th.
+
+#SELECT RESTAURANT
+
+```{r}
+selRestaurant <- 'R004'
+```
+
+# Read data and plot series in period between 2018-09-01 and 2020-02-19 on restaurant R004
+
+```{r}
+#df<- read.csv("C:/Users/pc/Desktop/df_pulito.csv", header = TRUE)
+setwd("~/Desktop")
+
+df<- read.csv("df_pulito.csv", header = TRUE)
+
+df$date <- as.Date(df$date, format = "%Y-%m-%d")
+start_date <- as.Date("2018-09-01")
+end_date <- as.Date("2020-02-19")
+
+filtered_df_tot <- df %>%
+  filter(date >= start_date & date <= end_date)
+
+filtered_df_00 <- df %>%
+  filter(date >= start_date & date <= end_date & ristorante == 'R000')
+filtered_df_01 <- df %>%
+  filter(date >= start_date & date <= end_date & ristorante == 'R001')
+filtered_df_02 <- df %>%
+  filter(date >= start_date & date <= end_date & ristorante == 'R002')
+filtered_df_03 <- df %>%
+  filter(date >= start_date & date <= end_date & ristorante == 'R003')
+filtered_df <- filtered_df_04 <- df %>%
+  filter(date >= start_date & date <= end_date & ristorante == 'R004')
+filtered_df_05 <- df %>%
+  filter(date >= start_date & date <= end_date & ristorante == 'R005')
+filtered_df_06 <- df %>%
+  filter(date >= start_date & date <= end_date & ristorante == 'R006')
+filtered_dfs <- list(filtered_df_00, filtered_df_01, filtered_df_02, filtered_df_03, filtered_df_04, filtered_df_05)
+
+
+head(filtered_df)
+
+vendite_r1 <- msts(filtered_df$lordo.totale, seasonal.periods = c(7, 365.25), ts.frequency = 7)
+head(vendite_r1)
+vendite_df <- data.frame(date = 1:length(vendite_r1), vendite = as.vector(vendite_r1))
+data_00 <- ts(filtered_df_00$lordo.totale, frequency = 7)
+data_01 <- ts(filtered_df_01$lordo.totale, frequency = 7)
+data_02 <- ts(filtered_df_02$lordo.totale, frequency = 7)
+data_03 <- ts(filtered_df_03$lordo.totale, frequency = 7)
+data_04 <- ts(filtered_df_04$lordo.totale, frequency = 7)
+data_05 <- ts(filtered_df_05$lordo.totale, frequency = 7)
+
+datasets <- list(data_00, data_01, data_02, data_03, data_04, data_05)
+
+
+ggplot(vendite_df, aes(x=date, y=vendite)) +
+  geom_line() +
+  labs(x="Tempo", y="Vendite") +
+  theme_minimal()
+vendite_r1_dec <- mstl(vendite_r1) 
+head(vendite_r1_dec)
+autoplot(vendite_r1_dec)
+```
+
+```{r}
+
+start_date <- as.Date("2018-09-09")
+end_date <- as.Date("2020-05-18")
+#nubmber of lock down days: 70
+plot_df <- df %>%
+  filter(date >= start_date & date <= end_date & ristorante == selRestaurant)
+plot_df
+ggplot(filtered_df_02, aes(x = date, y = lordo.totale)) +
+  geom_line(color = "blue") +
+  labs(x = "Date", y = "Lordo", title = "Lordo Time Series") +
+  theme_minimal()
+```
+
+# Time series analysis
+
+<https://datascienceplus.com/time-series-analysis-using-arima-model-in-r/>
+
+```{r}
+
+vendite_r1 <- msts(filtered_df$lordo.totale, seasonal.periods = c(7, 365.25), ts.frequency = 7)
+head(vendite_r1)
+vendite_df <- data.frame(date = 1:length(vendite_r1), vendite = as.vector(vendite_r1))
+
+
+ggplot(vendite_df, aes(x=date, y=vendite)) +
+  geom_line() +
+  labs(x="Tempo", y="Vendite") +
+  theme_minimal()
+vendite_r1_dec <- mstl(vendite_r1) 
+head(vendite_r1_dec)
+autoplot(vendite_r1_dec)
+```
+
+As we can observe, the behavior of the historical series exhibits extreme irregularity. This irregularity is primarily attributed to the presence of seasonal components within the data. The data, recorded on a daily basis, display multiple seasonal patterns. Specifically, there is an annual seasonality reflecting the typical fluctuations in restaurant activities, resulting in higher revenues on certain days of the year (such as Easter and Christmas) and lower revenues in other periods (such as August). Additionally, there is a weekly seasonality.
+
+We will analyze this using the MSTL algorithm (Multiple Seasonal Decomposition). It's worth noting that the seasonal component with a 365-day period (annual) cannot be estimated due to insufficient data. In fact, at least two complete periods, or at least two years of data, are required to estimate such a component. Consequently, the estimated trend will appear irregular, as it will include the part of seasonality that the algorithm was unable to calculate.
+
+Furthermore, we are compelled to use a daily granularity instead of a weekly one because at least 52 weeks would be required, and I am unable to apply the function accordingly.
+
+# Models
+
+Here, various models have been tested on data with both lordo.totale and dummy variables.
+
+We decided to retain only the best-performing models with an RMSE below 5,000. However, for completeness, here are all the tests conducted.
+
+All models have been tested with different dummy variables, and in the end, we will keep those 5-6 models that perform the best.
+
+## Function to perform rolling origin
+
+```{r}
+# Load necessary libraries
+library(forecast)
+library(prophet)
+library(ggplot2)
+rolling_forecast_function_1 <- function(data, model_type = "auto.arima", h = c(7), origins = 20, regressors = NULL, boxcox = FALSE, lambda = NULL, seed = 1) {
+  set.seed(seed)  # Set random seed for reproducibility
+  
+  obs <- if (is.data.frame(data)) nrow(data) else length(data)
+  print(paste("Number of observations: ", obs))
+
+  result_collector <- data.frame(Horizon = numeric(0), RMSE = numeric(0), MAPE = numeric(0))
+
+  for (j in h) {
+    rmse_array <- numeric()
+    mape_array <- numeric()
+
+    best_rmse <- Inf
+    best_iteration <- 0
+
+    print(paste("Horizon: ", j))
+
+    for (i in 1:origins) {
+      print(paste("Iteration: ", i))
+
+      train_size <- obs + i - origins - j
+      print(paste("Train size: ", train_size))
+
+      if (is.data.frame(data)) {
+        train_set <- data[1:train_size, ]
+        test_set <- data[(train_size + 1):length(data), ]
+      } else {
+        train_set <- data[1:train_size]
+        test_set <- data[(train_size + 1):length(data)]
+      }
+
+      if (!is.null(regressors)) {
+        train_regressor <- regressors[1:train_size, ]
+        test_regressor <- regressors[(train_size + 1):obs, ]
+      } else {
+        train_regressor <- NULL
+        test_regressor <- NULL
+      }
+
+      model <- switch(
+        model_type,
+        "auto.arima" = {
+          if (is.null(regressors)) {
+            auto.arima(train_set, seasonal = TRUE)
+          } else {
+            if (boxcox) {
+              lambda <- BoxCox.lambda(train_set, method = "guerrero", lower = -1, upper = 2)
+              train_set <- BoxCox(train_set, lambda)
+            }
+            auto.arima(train_set, seasonal = TRUE, stepwise = FALSE, lambda = lambda, approximation = FALSE, xreg = train_regressor)
+          }
+        },
+        "prophet" = {
+          prophet_df <- data.frame(ds = train_set$date, y = train_set$lordo.totale)
+          prophet(prophet_df)
+        },
+        "tbats" = tbats(train_set, seasonal.periods = 7),
+        "holt-winters" = HoltWinters(ts(train_set, frequency = 7), seasonal = "additive"),
+        "ets" = ets(train_set, model = 'ANN'),
+        "random.forest" = randomForest(lordo.totale ~ Giorno + Weekend_New + Festivo_or_Weekend_New + lordo.totale_lag1 + Colore + lordo.totale_lag2 + lordo.totale_lag7, data = train_set),
+        "random.forest.lag" = randomForest(lordo.totale ~ lag_1 + lag_7, data = train_set),
+        stop("Invalid model_type. Supported values are 'auto.arima', 'ets', 'tbats, and 'holt-winters'")
+      )
+
+      if (model_type %in% c('auto.arima', 'tbats', 'ets', 'holt-winters')) {
+        if (is.null(regressors)) {
+          forecasts <- forecast(model, h = length(test_set))
+        } else {
+          forecasts <- forecast(model, xreg = test_regressor, h = length(test_set))
+          if (boxcox) {
+            forecasts$mean <- InvBoxCox(forecasts$mean, lambda)
+          }
+        }
+      } else if (model_type %in% c('random.forest', 'random.forest.lag')) {
+        forecasts <- predict(model, newdata = test_set)
+      }
+
+      if (model_type %in% c('random.forest', 'random.forest.lag')) {
+        rmse_test <- sqrt(mean((test_set$lordo.totale - forecasts)^2, na.rm = TRUE))
+        mape_test <- mean(abs((test_set$lordo.totale - forecasts) / test_set$lordo.totale), na.rm = TRUE) * 100
+      } else if (model_type == 'prophet') {
+        rmse_test <- sqrt(mean((test_set$lordo.totale - forecasts$yhat[(nrow(train_set) + 1):nrow(forecasts)])^2, na.rm = TRUE))
+        mape_test <- mean(abs((test_set$lordo.totale - forecasts$yhat[(nrow(train_set) + 1):nrow(forecasts)]) / test_set$lordo.totale), na.rm = TRUE) * 100
+      } else {
+        rmse_test <- sqrt(mean((test_set - forecasts$mean)^2, na.rm = TRUE))
+        mape_test <- mean(abs((test_set - forecasts$mean) / test_set), na.rm = TRUE) * 100
+      }
+
+      print(paste("RMSE on the test set:", rmse_test))
+      print(paste("MAPE on the test set:", mape_test))
+
+      rmse_array <- c(rmse_array, rmse_test)
+      mape_array <- c(mape_array, mape_test)
+    }
+
+    result_collector[nrow(result_collector) + 1, ] = c(j, mean(rmse_array), mean(mape_array))
+  }
+
+  return(list(result_collector, forecasts, model))
+}
+
+```
+
+BUILT IN:
+
+```{r}
+
+
+rolling_origin <- function(data, ourCall = "predict(auto.arima(data, seasonal=TRUE), n.ahead=h)", ourValue ="pred", h = c(7), origins = 10, seed = 1){
+  set.seed(seed)
+  results <- list()
+  
+  for(currentData in data){
+    currentResults <- list()
+    print(paste("DATA: ", currentData))
+    for(horizon in h){
+      returnedValues <- ro(currentData, h = horizon, origins = origins, call = ourCall, value = ourValue)
+      
+      currentRmse <- RMSE(returnedValues$holdout, returnedValues$pred)
+      print(paste("Current RMSE: ", currentRmse))
+      currentResults[[as.character(horizon)]] <- currentRmse
+    }
+    
+    results[[paste("Dataset", length(results) + 1)]] <- currentResults
+  }
+  
+  return(results)
+}
+
+```
+
+#FUNCTION OLD ONE:
+
+```{r echo=TRUE}
+
+library(forecast)
+library(ggplot2)
+# data = filtered_df_res %>%
+#     filter(ristorante == "R004")
+# model_type = "random.forest"
+# h = c(70)
+# origins = 5
+# regressors = NULL
+
+
+rolling_forecast_function <- function(data, model_type = "auto.arima", h = c(7), origins = 20, regressors = NULL, boxcox = FALSE, lambda = NULL) {
+
+  if (is.data.frame(data)){
+    obs <- nrow(data)
+  } else {
+    obs <- length(data)
+  }
+  print(paste("Number of observations: ", obs))
+  
+  
+  result_collector <- data.frame(Horizon = numeric(0), RMSE = numeric(0), MAPE = numeric(0))
+
+
+
+
+  for (j in h){
+      rmse_array <- list()
+      mape_array <- list()
+      best_rmse <- Inf  
+      best_iteration <- 0 
+      print(paste("Horizon: ", j))
+      for (i in 0:origins) {
+      print(paste("iteration: ", i, "Observation: ", obs, " origins: ", origins, "j: ",j))
+
+      train_size= obs+i-origins-j
+      print(paste("Train size: ", train_size))
+      if (!is.data.frame(data)){
+
+        train_set <- data[1:train_size]
+        test_set <- data[(train_size + 1):(obs + i - origins)]
+
+      } else {
+        train_set <- data[1:train_size,]
+        test_set <- data[(train_size + 1):(obs + i - origins),]
+      }
+      print(paste("TEST SET LENGTH: ", nrow(test_set)))
+      print(paste("TRAIN SIZE: ", train_size))
+      print(paste("TRAIN SET LENGTH: ", nrow(train_set)))
+      
+      if (!is.null(regressors)){
+        train_regressor <- regressors[1:train_size,]
+
+        test_regressor <- regressors[(train_size + 1):obs,]
+      }
+      
+      if (model_type == "auto.arima") {
+        if (is.null(regressors)) {
+          set.seed(1) 
+          model <- auto.arima(train_set, seasonal=TRUE)#, stepwise=FALSE, approximation=FALSE)
+          } else {
+            if (boxcox){
+               lambda <- BoxCox.lambda(train_set, method="guerrero", lower=-1, upper=2)
+              train_set <- BoxCox(train_set, lambda)
+            }
+            model <- auto.arima(train_set, seasonal = TRUE, stepwise = FALSE,lambda = lambda, approximation = FALSE, xreg = train_regressor)
+        }
+      } else if (model_type == "prophet"){
+          print("PROPHET")
+          prophet_df <- data.frame(ds = train_set$date, y = train_set$lordo.totale)
+set.seed(13)
+          model <- prophet(prophet_df)
+          future <- make_future_dataframe(model, periods = nrow(test_set))
+          forecasts <- predict(model, future)
+            
+      } else if (model_type == "tbats") {
+          model <- tbats(train_set, seasonal.periods=7)
+      } else if (model_type == "holt-winters") {
+          model <- HoltWinters(ts(train_set, frequency=7), seasonal="additive")
+      } else if (model_type == "ets") {
+          model <- ets(train_set, model = 'ANN')
+      } else if (model_type == "random.forest"){
+
+        model <- randomForest(lordo.totale ~ Giorno + Weekend_New + Festivo_or_Weekend_New + lag_7 + lag_2 + lag_1 , data=train_set)
+      } else if (model_type == "random.forest.lag") {
+        model <- randomForest(lordo.totale ~ lag_1 + lag_7, data = train_set)
+
+      }
+      else {
+        stop("Invalid model_type. Supported values are 'auto.arima', 'ets', 'tbats and 'holt-winters'")
+      }
+      
+      if(model_type == 'auto.arima' || model_type == 'tbats' || model_type == 'ets' || model_type == 'holt-winters'){
+        if(is.null(regressors) ){
+       
+          forecasts <- forecast(model, h=length(test_set))
+          
+        }else{
+          print(paste(test_regressor))
+
+          print(paste(test_set))
+          print(paste(model))
+
+          forecasts <- forecast(model, xreg=test_regressor, h=length(test_set))
+
+           if(boxcox){
+            forecasts$mean <- InvBoxCox(forecasts$mean, lambda)
+
+          }
+        }
+      }else if (model_type == 'random.forest' || model_type == 'random.forest.lag') {
+        forecasts <- predict(model, newdata=test_set)
+        #forecasts_2 <- forecast(model,h=length(test_set))
+       
+      }
+      #EVALUATION
+      
+      if (model_type == 'random.forest' || model_type == 'random.forest.lag'){
+        rmse_test <- sqrt(mean((test_set$lordo.totale - forecasts)^2))
+        mape_test <- mean(abs((test_set$lordo.totale - forecasts) / test_set$lordo.totale)) * 100
+  
+      }else if (model_type == 'prophet'){
+        rmse_test <- sqrt(mean((test_set$lordo.totale - forecasts$yhat[(nrow(train_set)+1):nrow(forecasts)])^2))
+        mape_test <- mean(abs((test_set$lordo.totale - forecasts$yhat[(nrow(train_set) + 1):nrow(forecasts)]) / test_set$lordo.totale), na.rm = TRUE) * 100
+        print(paste("RMSE on the test set:", rmse(test_set$lordo.totale, forecasts$yhat[(nrow(train)+1):nrow(forecasts)])))
+        print(paste("MAPE on the test_set set:", MAPE(test_set$lordo.totale, forecasts$yhat[(nrow(train)+1):nrow(forecasts)])))
+
+      } else {
+              rmse_test <- sqrt(mean((test_set - forecasts$mean)^2))
+              mape_test <- mean(abs((test_set - forecasts$mean) / test_set)) * 100
+      }
+      
+      # Print the RMSE
+      #print(paste("RMSE on the test set:", rmse_test))
+      #print(paste("MAPE on the test set:", mape_test))
+        
+      rmse_array <- append(rmse_array, rmse_test)
+      mape_array <- append(mape_array, mape_test)
+  
+      }
+    
+     
+      result_collector[nrow(result_collector) + 1,] = c(j,mean(rmse_array), mean(mape_array))
+
+      plot(forecasts)
+
+
+
+  }
+
+  #print(paste("Mean in predicted period:", mean(forecasts)))
+  #print(paste("Total in predicted period:", mean(forecasts) *70))
+  return(list(result_collector, forecasts, model))
+}
+  
+
+```
+
+```{r}
+test_set
+```
+
+# 1. Linear Models
+
+By providing the time series data directly (which is non-stationary, but auto.arima automatically handles non-stationarity), and specifying that there is a repeating pattern every 7 days when converting it into a time series, each data point still represents a single day. However, functions like auto.arima and other time series functions in R will recognize that there is a pattern repeating every 7 days, indicating weekly seasonality.
+
+## Divide in training and test set to perform holdout
+
+```{r}
+filtered_df <- filtered_df[order(filtered_df$date), ]
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+train_ts <- ts(train$lordo.totale, frequency=7)
+```
+
+Note: We have also included seasonality, so it's an S-ARIMA. Here's how to interpret it:
+
+```         
+ARIMA(1,0,0): This part represents the non-seasonal component of the model:
+AR(1): Autoregressive of order 1. This means that the current value of the series is influenced by its value at the previous time step.
+I(0): Integrated of order 0, which means that no non-seasonal differencing is applied.
+MA(0): Moving Average of order 0, which means there is no non-seasonal MA component.
+
+(0,1,1)[7]: This part represents the seasonal component of the model:
+SAR(0): Seasonal Autoregressive of order 0.
+SI(1): Seasonal Integrated of order 1. This indicates seasonal differencing is applied.
+SMA(1): Seasonal Moving Average of order 1.
+[7]: This indicates seasonality with a period of 7, suggesting weekly seasonality.
+
+with drift: This indicates that there is a drift term in the model, meaning there is a linear trend over time.
+```
+
+\
+So, in summary, it's a SARIMA model with AR(1) components, seasonal differencing, seasonal SMA(1), and a drift term.
+
+#### 
+
+```         
+Series: train_ts 
+ARIMA(0,0,2)(0,1,1)[7] 
+ 
+```
+
+ARIMA model with seasonal components, which is commonly referred to as a SARIMA (Seasonal AutoRegressive Integrated Moving Average) model
+
+This specifies that the model is a SARIMA model with:
+
+-   No autoregressive (AR) terms, as indicated by the 0.
+
+-   No differencing (i.e., the series is not differenced), as indicated by the second 0.
+
+-   Three moving average (MA) terms, as indicated by the 3.
+
+-   No seasonal autoregressive terms, as indicated by the 0 in the seasonal component.
+
+-   One seasonal differencing, as indicated by the 1 in the seasonal component.
+
+-   One seasonal moving average term, as indicated by the 1 in the seasonal component.
+
+-   A seasonal frequency of 7, which suggests weekly seasonality (e.g., daily data with a weekly cycle).
+
+These coefficients represent the estimated parameters of the model. The `s.e.` below each coefficient is the standard error of the estimate. The standard errors can be used to assess the significance of each coefficient.
+
+## 1. SARIMA Model in holdout (iter trough different restaurant)
+
+```{r}
+
+# Iterazione sulla lista
+for (i in seq_along(filtered_dfs)) {
+  nome_dataset <- paste("data_", sprintf("%02d", i - 1), sep="")
+  
+  filtered_df <- filtered_dfs[[i]]
+
+  cat("Dataset restaurant:", nome_dataset, "\n")
+  print(head(filtered_df))
+  
+  filtered_df <- filtered_df[order(filtered_df$date), ]
+  train_size <- floor(0.8 * nrow(filtered_df))
+  train <- filtered_df[1:train_size, ]
+  test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+  # Convert the training data to a time series object with a frequency of 7 (weekly seasonality)
+  train_ts <- ts(train$lordo.totale, frequency=7)
+  #il risuktto è uguale sia  con arima mio sia con l'auto perchè è il migliore che trova
+  #model <- Arima(train_ts, order=c(1,0,0), seasonal=c(0,1,1), include.drift=TRUE)
+  model <- auto.arima(train_ts)
+  summary(model)
+  checkresiduals(model)
+  plot(resid(model))
+  test_ts <- ts(test$lordo.totale)
+  forecasted_values <- forecast(model, h=nrow(test))
+  rmse <- sqrt(mean((test$lordo.totale - forecasted_values$mean)^2))
+  print(paste("RMSE on the test set:", rmse))
+  accuracy(forecasted_values$mean, test$lordo.totale)
+  combined_data <- data.frame(
+    Time = 1:length(test$lordo.totale),
+    Actual = test$lordo.totale,
+    Predicted = forecasted_values$mean
+  )
+  
+  ggplot(combined_data, aes(x=Time)) +
+    geom_line(aes(y=Actual, color="Actual")) +
+    geom_line(aes(y=Predicted, color="Predicted")) +
+    labs(y="Values", x="Time", title="Actual vs. Predicted Values", color="Legend") +
+    theme_minimal()
+}
+
+
+
+```
+
+**sigma\^2:** This is the estimated variance of the residuals (errors) of the model.
+
+-   **log likelihood:** This is the log-likelihood value, which measures how well the model fits the data. Higher values indicate better fit.
+
+-   **AIC, AICc, BIC**: These are information criteria used to compare different models. Lower values are better. AIC and BIC penalize model complexity, with BIC penalizing more heavily. AICc is a corrected version of AIC for small sample sizes.
+
+## 1.2 (Test) SARIMA Model in cross-validation with k-fold with k=5
+
+```{r}
+library(forecast)
+library(ggplot2)
+
+# Assuming you have your filtered_df loaded and prepared
+
+# Number of training periods
+n <- nrow(filtered_df)
+train_size <- floor(0.8 * n)
+
+# Initialize variables to store RMSE values
+rmse_values <- numeric(n - train_size)
+
+# Perform rolling forecast origin cross-validation
+for (i in (train_size + 1):n) {
+  # Create training set
+  train_fold <- filtered_df[1:i, ]
+  
+
+  train_ts <- ts(train_fold$lordo.totale, frequency = 7)
+  
+  model <- auto.arima(train_ts)
+  
+  forecasted_values <- forecast(model, h = 1)
+    rmse <- sqrt(mean((filtered_df[i, "lordo.totale"] - forecasted_values$mean)^2))
+  rmse_values[i - train_size] <- rmse
+}
+
+# Print RMSE values for each forecast
+print("RMSE values for each forecast:")
+print(rmse_values)
+
+# Calculate and print average RMSE
+avg_rmse <- mean(rmse_values)
+print(paste("Average RMSE:", avg_rmse))
+
+
+```
+
+## 1.3 SARIMA Model in cross-validation with Box-Cox transformation
+
+```{r}
+library(forecast)
+library(ggplot2)
+
+# Dati totali
+total_data <- ts(filtered_df$lordo.totale, frequency = 7)
+
+# Numero di osservazioni nel test set ad ogni iterazione
+test_length <- 70
+
+# Numero iniziale di osservazioni nel set di allenamento
+initial_train_length <- 422 - test_length
+
+errors <- numeric(528 - initial_train_length - test_length + 1)
+predictions <- vector("list", length = 528 - initial_train_length - test_length + 1)
+
+for (t in seq_len(528 - initial_train_length - test_length + 1)) {
+  train_subset <- total_data[1:(initial_train_length + t - 1)]
+  test_subset <- total_data[(initial_train_length + t):(initial_train_length + t + test_length - 1)]
+
+  lambda <- BoxCox.lambda(train_subset)
+  train_transformed <- BoxCox(train_subset, lambda)
+  
+  model <- auto.arima(train_transformed)
+  forecasted_transformed <- forecast(model, h = test_length)
+  
+  # Converti le previsioni alla scala originale
+  forecasted_values_original_scale <- InvBoxCox(forecasted_transformed$mean, lambda)
+  
+  # Calcola l'errore di previsione per questa iterazione
+  errors[t] <- sqrt(mean((test_subset - forecasted_values_original_scale)^2))
+  
+  # Store predictions for plotting
+  predictions[[t]] <- data.frame(Time = (initial_train_length + t):(initial_train_length + t + test_length - 1),
+                                  Predicted = forecasted_values_original_scale)
+}
+
+# Calcola l'RMSE medio dalla cross-validation
+average_rmse <- mean(errors, na.rm = TRUE)
+print(paste("Average RMSE from cross-validation:", average_rmse))
+
+# Create a plot for RMSE trend
+rmse_data <- data.frame(Iteration = seq_len(length(errors)), RMSE = errors)
+rmse_plot <- ggplot(rmse_data, aes(x = Iteration, y = RMSE)) +
+  geom_line() +
+  labs(x = "Iteration", y = "RMSE", title = "RMSE Trend in Rolling Forecast Origin Cross-Validation") +
+  theme_minimal()
+
+# # Create a plot for prediction on a test set
+# test_subset <- total_data[(initial_train_length + 1):(initial_train_length + test_length)]
+# prediction_data <- do.call(rbind, predictions)
+# prediction_plot <- ggplot() +
+#   geom_line(data = prediction_data, aes(x = Time, y = Predicted), color = "blue", linetype = "solid", size = 1) +
+#   geom_line(data = data.frame(Time = (initial_train_length + 1):(initial_train_length + test_length),
+#                                Actual = test_subset), aes(x = Time, y = Actual), color = "red", linetype = "dashed", size = 1) +
+#   labs(x = "Time", y = "Values", title = "Actual vs. Predicted Values on Test Set") +
+#   theme_minimal()
+
+# Print plots
+print(rmse_plot)
+#print(prediction_plot)
+
+
+```
+
+We attempted various transformations; however, only the Box-Cox transformation ultimately yielded improved performance. Consideration was given to the 7-day pattern in constructing the time series. It is important to note that this transformation did not pass diagnostic tests due to low p-values in the I-Ljung test. Consequently, efforts were made to develop an enhanced model.
+
+## 1.4 Ljung - Box Test on model SARIMA and check residuals
+
+```{r}
+library(forecast)
+
+# Iterazione sulla lista
+for (i in seq_along(filtered_dfs)) {
+  nome_dataset <- paste("data_", sprintf("%02d", i - 1), sep="")
+  
+  # Accesso al dataset corrente
+  filtered_df <- filtered_dfs[[i]]
+  
+  # Fai qualcosa con il dataset (sostituisci con le tue operazioni)
+  # Ad esempio, puoi stampare il nome del dataset e le prime righe
+  cat("Dataset Name: ", nome_dataset, "\n")
+  print(head(filtered_df))
+  
+  # Puoi eseguire le tue operazioni qui...
+  filtered_df <- filtered_df[order(filtered_df$date), ]
+  train_size <- floor(0.8 * nrow(filtered_df))
+  train <- filtered_df[1:train_size, ]
+  test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+  # Convert the training data to a time series object with a frequency of 7 (weekly seasonality)
+  train_ts <- ts(train$lordo.totale, frequency=7)
+  lambda <- BoxCox.lambda(train$lordo.totale)
+  train_transformed <- BoxCox(train$lordo.totale, lambda)
+  train_ts <- ts(train_transformed, frequency=7)
+  set.seed(1)
+  model <- auto.arima(train_ts)
+  summary(model)
+  checkresiduals(model)
+  forecasted_transformed <- forecast(model, h=nrow(test))
+  forecasted_values_original_scale <- InvBoxCox(forecasted_transformed$mean, lambda)
+  rmse <- sqrt(mean((test$lordo.totale - forecasted_values_original_scale)^2))
+  print(paste("RMSE on the test set:", rmse))
+  ljung_box <- Box.test(residuals(model), lag=7)
+  print(ljung_box)
+}
+
+
+```
+
+The model didn't pass the test since the p-value is very close to 0 and we cannot reject the null hypotesis
+
+## 1.5 Different transformation Box-Cox and second order differencing: failed experiment
+
+```{r}
+# Ensure the data is ordered by date
+filtered_df <- filtered_df[order(filtered_df$date), ]
+
+# Splitting the dataset into training and test sets
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+
+# Apply Box-Cox transformation
+lambda <- BoxCox.lambda(train$lordo.totale)
+train_bc <- BoxCox(train$lordo.totale, lambda)
+
+# Apply second-order differencing
+train_diff <- diff(diff(train_bc))
+
+# Convert the transformed training data to a time series object with a frequency of 7 (weekly seasonality)
+train_ts <- ts(train_diff, frequency=7)
+
+# Fit the ARIMA model
+model <- auto.arima(train_ts)
+summary(model)
+
+# Forecast the future values
+forecasted_values <- forecast(model, h=nrow(test))
+
+# Revert the second-order differencing
+# We first use cumsum once to revert the first differencing
+reverted_diff1 <- cumsum(c(tail(train_bc, 1), forecasted_values$mean))
+
+# Then, we use cumsum again to revert the second differencing
+reverted_diff2 <- cumsum(c(tail(train_bc, n=2)[1], reverted_diff1))
+
+# Revert the Box-Cox transformation
+forecasted_final <- InvBoxCox(reverted_diff2, lambda)
+
+# Calculate RMSE
+rmse <- sqrt(mean((test$lordo.totale - forecasted_final)^2))
+print(paste("RMSE on the test set:", rmse))
+
+
+```
+
+## 1.6 Forecast Evaluation with Rolling Origin
+
+```{r}
+
+# Iterazione sulla lista
+for (i in seq_along(datasets)) {
+  nome_dataset <- paste("data_", sprintf("%02d", i - 1), sep="")
+  
+  # Accesso al dataset corrente
+  data <- datasets[[i]]
+  
+  # Fai qualcosa con il dataset (sostituisci con le tue operazioni)
+  # Ad esempio, puoi stampare il nome del dataset e le prime righe
+  cat("Dataset Name: ", nome_dataset, "\n")
+  print(head(data))
+  
+  result <- rolling_forecast_function_1(data, model_type = "auto.arima", h = c(1,7,14,70), origins = 20, regressors = NULL)
+  result <- result[[1]]
+  forecasts <- result[[2]]
+  model <- result[[3]]
+  
+  print(paste("Results: ", result))
+
+ 
+  print(result)
+}
+
+
+```
+
+```{r}
+data
+```
+
+##RO FUNCTION
+
+```{r}
+# Define the model call
+ourCall <- "predict(auto.arima(data, seasonal=TRUE), n.ahead=h)"
+ourValue <- 'pred'
+
+returnedValues1 <- ro(data_04, h = 7, origins = 10, call = ourCall, value = ourValue)
+
+```
+
+```{r}
+class(data_04)
+tail(data_04, 7)
+```
+
+```{r}
+returnedValues1$holdout[,"origin530"]
+```
+
+```{r}
+returnedValues1$pred
+```
+
+```{r}
+results <- rolling_origin(c(data_04), h= c(7))
+results
+```
+
+```{r}
+  result <- rolling_forecast_function_1(data_04, model_type = "auto.arima", h = c(7), origins = 10, regressors = NULL)
+  result <- result[[1]]
+  forecasts <- result[[2]]
+  model <- result[[3]]
+  
+  print(paste("Results: ", result))
+
+ 
+  print(result)
+```
+
+```{r}
+plot(returnedValues1)
+```
+
+```{r}
+calculate_RMSE <- function(actuals, forecasts) {
+  rmse <- sqrt(mean((actuals - forecasts)^2, na.rm = TRUE))
+  return(rmse)
+}
+
+# Example usage:
+rmse_value <- calculate_RMSE(returnedValues1$actuals, returnedValues1$pred)
+rmse_value
+```
+
+```{r}
+rrmse_values
+
+```
+
+## 1.7 Transformation that doesn't perform well but pass the test
+
+```{r}
+filtered_df <- filtered_df[order(filtered_df$date), ]
+train_diff <- diff(train$lordo.totale, lag=7)
+# Box-Cox transformation to stabilize variance
+lambda <- BoxCox.lambda(train_diff)
+train_transformed <- BoxCox(train_diff, lambda)
+train_ts <- ts(train_transformed, frequency=7)
+model <- auto.arima(train_ts)
+summary(model)
+checkresiduals(model)
+forecasted_transformed <- forecast(model, h=nrow(test))
+forecasted_inv_transformed <- InvBoxCox(forecasted_transformed$mean, lambda)
+forecasted_values_original_scale <- cumsum(c(tail(train$lordo.totale, 1), forecasted_inv_transformed))[-1]
+rmse <- sqrt(mean((test$lordo.totale - forecasted_values_original_scale)^2))
+print(paste("RMSE on the test set:", rmse))
+
+```
+
+#### 
+
+```{r}
+
+ts_data <- ts(filtered_df$lordo.totale, frequency=7)
+decomposition <- stl(ts_data, s.window="periodic")
+threshold <- 2 * sd(decomposition$time.series[, "remainder"])
+outliers <- which(abs(decomposition$time.series[, "remainder"]) > threshold)
+train_size <- floor(0.8 * length(ts_data))
+if (any(outliers <= train_size)) {  # controlla se ci sono outliers nel training set
+    train_outliers <- outliers[outliers <= train_size]
+    ts_data[train_outliers] <- NA
+}
+
+train <- ts_data[1:train_size]
+test <- ts_data[(train_size + 1):length(ts_data)]
+train_interpolated <- na.approx(train)
+model <- auto.arima(train_interpolated)
+summary(model)
+forecasts <- forecast(model, h=length(test))
+rmse <- sqrt(mean((test - forecasts$mean)^2))
+print(paste("RMSE on the test set:", rmse))
+
+
+```
+
+# 2. SARIMAX with daily dummies
+
+```{r}
+library(forecast)
+library(fastDummies)
+
+
+
+dum_day_df <- filtered_df[, c("date", "Giorno")]
+dum_day_df$Giorno <- as.factor(dum_day_df$Giorno)
+dum_day_df <- dummy_cols(dum_day_df, select_columns = c("Giorno"), remove_selected_columns = TRUE)
+
+dum_day_df <- dum_day_df[ , !(names(dum_day_df) %in% c("date", "Giorno_lunedì"))]
+
+# Converti il dataframe in una matrice
+dum_day <- as.matrix(dum_day_df)
+
+# Stabilisci il punto di divisione basato su 80/20
+train_size <- floor(0.8 * nrow(filtered_df))
+
+# Dividi il dataset in set di addestramento e test
+train_dumday <- dum_day[1:train_size,]
+test_dumday <- dum_day[(train_size + 1):nrow(filtered_df),]
+
+
+vendite_ts <- ts(filtered_df$lordo.totale, frequency=7) # Assumendo una frequenza settimanale
+train_vendite <- vendite_ts[1:train_size]
+test_vendite <- vendite_ts[(train_size + 1):length(vendite_ts)]
+set.seed(1) 
+model <- auto.arima(train_vendite, xreg=train_dumday, seasonal=TRUE, stepwise=FALSE, approximation=FALSE)
+summary(model)
+forecasts <- forecast(model, xreg=test_dumday, h=length(test_vendite))
+accuracy(forecasts$mean, test_vendite)
+ljung_box <- Box.test(residuals(model), lag=log(length(residuals(model))))
+print(ljung_box)
+
+checkresiduals(model)
+# SETTIMANALE
+ljung_box <- Box.test(residuals(model), lag=7)
+print(ljung_box)
+
+
+# Calculate RMSE
+rmse_test <- sqrt(mean((test_vendite - forecasts$mean)^2))
+
+# Print the RMSE
+print(paste("RMSE on the test set:", rmse_test))
+
+
+
+
+
+
+
+
+```
+
+## 2.1 SARIMAX Evaluation in Rolling Origin
+
+```{r}
+
+
+# result <- rolling_forecast_function(data, model_type = "auto.arima", h = c(7,14,21,70), origins = 5, regressors = dum_day)
+# result <- result[[1]]
+# forecasts <- result[[2]]
+# model <- result[[3]]
+# 
+# print(paste("Results: ", result))
+# 
+#  
+# result
+
+# Iterazione sulla lista
+for (i in seq_along(datasets)) {
+  nome_dataset <- paste("data_", sprintf("%02d", i - 1), sep="")
+  
+  # Accesso al dataset corrente
+  data <- datasets[[i]]
+  
+  # Fai qualcosa con il dataset (sostituisci con le tue operazioni)
+  # Ad esempio, puoi stampare il nome del dataset e le prime righe
+  cat("Dataset Name: ", nome_dataset, "\n")
+  print(head(data))
+  
+result <- rolling_forecast_function(data, model_type = "auto.arima", h = c(7,14,21,70), origins = 5, regressors = dum_day)
+  result <- result[[1]]
+  forecasts <- result[[2]]
+  model <- result[[3]]
+  
+  print(paste("Results: ", result))
+
+ 
+  print(result)
+}
+
+```
+
+```{r}
+
+library(forecast)
+library(fastDummies)
+
+data <- ts(filtered_df$lordo.totale, frequency = 7)
+obs <- length(data)
+h = 7
+origins = 10
+
+rmse_array <- numeric()
+
+
+
+dum_day_df <- filtered_df[, c("date", "Giorno")]
+dum_day_df$Giorno <- as.factor(dum_day_df$Giorno)
+dum_day_df <- dummy_cols(dum_day_df, select_columns = c("Giorno"), remove_selected_columns = TRUE)
+
+dum_day_df <- dum_day_df[ , !(names(dum_day_df) %in% c("date", "Giorno_lunedì"))]
+
+# Converti il dataframe in una matrice
+dum_day <- as.matrix(dum_day_df)
+
+for(i in 1:origins){
+  
+    print("iteration number ", i)
+    print(i)
+
+  # Fit the model
+  #testModel <- ets(data[1:(obs+i-origins-h)])
+  train_size= obs+i-origins-h
+  train_dumday <- dum_day[1:train_size,]
+  test_dumday <- dum_day[(train_size + 1):obs,]
+
+  train_vendite <- data[1:train_size]
+test_vendite <- data[(train_size + 1):length(data)]
+
+
+set.seed(1) 
+model <- auto.arima(train_vendite, xreg=train_dumday, seasonal=TRUE, stepwise=FALSE, approximation=FALSE)
+
+summary(model)
+forecasts <- forecast(model, xreg=test_dumday, h=length(test_vendite))
+accuracy(forecasts$mean, test_vendite)
+ljung_box <- Box.test(residuals(model), lag=log(length(residuals(model))))
+print(ljung_box)
+
+checkresiduals(model)
+# SETTIMANALE
+ljung_box <- Box.test(residuals(model), lag=7)
+print(ljung_box)
+
+
+# Calculate RMSE
+rmse_test <- sqrt(mean((test_vendite - forecasts$mean)^2))
+
+# Print the RMSE
+print(paste("RMSE on the test set:", rmse_test))
+  
+rmse_array <- c(rmse_array, rmse_test)
+
+  
+}
+
+
+print(paste("Mean of RMSE: ", mean(rmse_array)))
+```
+
+## 2.2 Box-Cox Transformation on SARIMAX
+
+RISULTA PEGGIO QUINDI TENGO QUELLO NORMALE NON TRASFORMATO, SPEIGA COME HANNO FATTO GLI ALTRI NEL REPORT, CHE ABBIAMO USATO I PACF E ACF PER INDOVINARE PARAMETRI MA POI LA FUNZIONE AUTO ARIMA CI HA DATO MODELLI MIGLIORI
+
+```{r}
+
+#Retrieve dummy day 
+dum_day_df <- filtered_df[, c("date", "Giorno")]
+dum_day_df$Giorno <- as.factor(dum_day_df$Giorno)
+dum_day_df <- dummy_cols(dum_day_df, select_columns = c("Giorno"), remove_selected_columns = TRUE)
+dum_day_df <- dum_day_df[ , !(names(dum_day_df) %in% c("date", "Giorno_lunedì"))]
+dum_day <- as.matrix(dum_day_df)
+
+
+train_size <- floor(0.8 * nrow(filtered_df))
+
+train_dumday <- dum_day[1:train_size,]
+test_dumday <- dum_day[(train_size + 1):nrow(filtered_df),]
+
+vendite_ts <- ts(filtered_df$lordo.totale, frequency=7) # Assumendo una frequenza settimanale
+train_vendite <- vendite_ts[1:train_size]
+test_vendite <- vendite_ts[(train_size + 1):length(vendite_ts)]
+
+
+lambda <- BoxCox.lambda(train_vendite, method="guerrero", lower=-1, upper=2) # You can adjust the method and lambda bounds if needed
+train_vendite_bc <- BoxCox(train_vendite, lambda)
+
+set.seed(1) 
+model <- auto.arima(train_vendite_bc, xreg=train_dumday, seasonal=TRUE, stepwise=FALSE, approximation=FALSE)
+
+summary(model)
+
+forecasts <- forecast(model, xreg=test_dumday, h=length(test_vendite))
+
+forecasts$mean <- InvBoxCox(forecasts$mean, lambda)
+accuracy(forecasts$mean, test_vendite)
+rmse_test <- sqrt(mean((test_vendite - forecasts$mean)^2))
+print(paste("RMSE on the test set:", rmse_test))
+ljung_box <- Box.test(residuals(model), lag=log(length(residuals(model))))
+print(ljung_box)
+checkresiduals(model)
+# SETTIMANALE
+ljung_box <- Box.test(residuals(model), lag=7)
+print(ljung_box)
+
+```
+
+## 2.3 Rolling Origin with Box-Cox transformation
+
+```{r}
+dum_day_df <- filtered_df[, c("date", "Giorno")]
+dum_day_df$Giorno <- as.factor(dum_day_df$Giorno)
+dum_day_df <- dummy_cols(dum_day_df, select_columns = c("Giorno"), remove_selected_columns = TRUE)
+
+dum_day_df <- dum_day_df[ , !(names(dum_day_df) %in% c("date", "Giorno_lunedì"))]
+
+# Converti il dataframe in una matrice
+dum_day <- as.matrix(dum_day_df)
+data <- ts(filtered_df$lordo.totale, frequency = 7)
+
+result <- rolling_forecast_function_1(data, model_type = "auto.arima", h = c(7,14,21,70), origins = 5, regressors = dum_day, boxcox = TRUE)
+result <- result[[1]]
+forecasts <- result[[2]]
+covid_model <- result[[3]]
+
+print(paste("Results: ", result))
+
+ 
+result
+```
+
+```{r}
+results
+```
+
+## 2.4 SARIMAX with Fourier Terms
+
+Fourier terms are generated for a time series with a weekly frequency (7 days). The parameter `K=3` indicates that up to the third order of sine and cosine terms are included.
+
+-   A larger KK allows the Fourier terms to capture more complex seasonal patterns.
+
+-   However, a very large KK could lead to overfitting, where the model becomes too closely tailored to the training data and may not generalize well to new data.
+
+For weekly data (frequency=7), a KK value of 3 means it's attempting to capture patterns that repeat roughly every 2, 1, or 0.5 weeks
+
+-   You have an ARIMA model with non-seasonal orders of (3,1,1)(3,1,1). This means:
+
+    -   p=3p=3: AR order of 3, implying that the current value of the series can be explained by its past three values.
+
+    -   d=1d=1: A first difference is taken to make the series stationary.
+
+    -   q=1q=1: MA order of 1, implying that the current error term can be explained by its past value.
+
+-   The model incorporates external regressors, which in this case are the Fourier terms. Therefore, it's an ARIMAX model. If there were also seasonal components in the ARIMA, it would be a SARIMAX model. The "X" in ARIMAX or SARIMAX stands for "eXogenous," indicating the inclusion of external regressors.
+
+-   The Box-Cox transformation with λ=1.077409λ=1.077409 suggests that a transformation was applied to stabilize the variance of the time series. The Box-Cox transformation is a family of power transformations indexed by λλ. When λ=1λ=1, it's a log transformation. Values other than 1 represent other types of power transformations.
+
+So, to summarize, you have an ARIMAX model with Fourier terms as external regressors, fitted with a specific Box-Cox transformation to stabilize variance.
+
+```{r}
+library(forecast)
+library(forecast)
+
+# Generate Fourier terms for the entire dataset
+fourier_terms <- fourier(ts(filtered_df$lordo.totale, frequency=7), K=3)
+
+# Splitting the data and Fourier terms
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+
+train_fourier <- fourier_terms[1:train_size, ]
+test_fourier <- fourier_terms[(train_size + 1):nrow(fourier_terms), ]
+
+# Convert the training data to a time series object
+train_ts <- ts(train$lordo.totale, frequency=7)
+
+# Fit ARIMA model with Fourier terms
+model <- auto.arima(train_ts, xreg=train_fourier, lambda="auto", stepwise=TRUE, approximation=FALSE)
+
+# In-sample forecast to get predictions on the training set
+in_sample_forecasts <- fitted(model)
+rmse_train <- sqrt(mean((train$lordo.totale - in_sample_forecasts)^2))
+print(paste("RMSE on the training set:", rmse_train))
+summary(model)
+# Forecast on the test set
+forecasts <- forecast(model, xreg=test_fourier, h=nrow(test))
+rmse_test <- sqrt(mean((test$lordo.totale - forecasts$mean)^2))
+print(paste("RMSE on the test set:", rmse_test))
+accuracy(forecasts$mean, test$lordo.totale)
+checkresiduals(model)
+plot(resid(model))
+
+```
+
+### 2.5 Rolling Forecast Origin Fourier
+
+```{r}
+result <- rolling_forecast_function_1(data_03, model_type = "auto.arima", h = c(7,14,21,70), origins = 10, regressors = fourier_terms, boxcox = FALSE, lambda = 'auto')
+result <- result[[1]]
+forecasts <- result[[2]]
+model <- result[[3]]
+
+print(paste("Results: ", result))
+
+ 
+result
+```
+
+```{r}
+result
+
+```
+
+## 2.6 Add other variables with Fourier (DO NOT CONSIDER FOR THE MOMENT)
+
+```{r}
+train_series <- ts(filtered_df$lordo.totale[1:429], frequency=7)  # Assuming a weekly frequency
+train_dumann_matrix <- as.matrix(dum_ann_df[1:429,])
+test_series <- ts(filtered_df$lordo.totale[430:nrow(filtered_df)], frequency=7)
+test_dumann_matrix <- as.matrix(dum_ann_df[430:nrow(dum_ann_df),])
+
+
+mod4 <- Arima(y = train_series, order = c(3, 1, 3), seasonal = list(order = c(1, 0, 0)), xreg = train_dumann_matrix, lambda = "auto")
+
+summary(mod4)
+# Ensure that test_dumann_matrix is a numeric matrix
+test_dumann_matrix <- as.matrix(dum_ann_df[430:nrow(dum_ann_df),])
+str(test_dumann_matrix)  # This should show it as a numeric matrix
+
+forecasted_values_trimmed <- forecasted_values[1:108]
+
+rmse <- sqrt(mean((forecasted_values_trimmed - test_series)^2))
+print(paste("RMSE on Test Set:", rmse))
+
+
+```
+
+```{r}
+library(readxl)
+library(forecast)
+library(readxl)
+library(forecast)
+train <- ts(train)
+train_dumann <- as.matrix(train_dumann)
+
+dum_ann_df <- read_xlsx("C:/Users/pc/Desktop/DATA-SCIENCE LAB/restaurant-revenue-loss-COVID-retrospective-analysis-main/restaurant-revenue-loss-COVID-retrospective-analysis-main/0. Additional Data/fest_precovid.xlsx", col_types = NULL)
+
+# Remove the 'date' column
+dum_ann_df <- subset(dum_ann_df, select = -date)
+
+# Convert all columns to integer type
+dum_ann_df <- as.data.frame(lapply(dum_ann_df, as.integer))
+
+# Split the dummy data into training and test datasets
+train_dumann <- as.matrix(dum_ann_df[1:length(train),])
+
+# Now, fit the ARIMA model with external regressors
+mod4 <- Arima(y = train, order = c(3, 1, 3), seasonal = list(order = c(1, 0, 0)), xreg = train_dumann, lambda = "auto")
+
+# Display the model summary
+summary(mod4)
+
+
+```
+
+# 3. PROPHET with more dummies
+
+```{r}
+library(psych)
+describe(filtered_df)
+
+```
+
+```{r}
+library(fastDummies)
+library(prophet)
+
+# Splitting the data and Fourier terms
+train_size <- floor(0.8 * nrow(filtered_df_00))
+train <- filtered_df_00[1:train_size, ]
+test <- filtered_df_00[(train_size + 1):nrow(filtered_df_00), ]
+
+# preparo train cin data+lordotot train  e lo chiamo ds che lo vado a mettere in future(sarebbero le fate)
+prophet_df <- data.frame(ds = train$date, y = train$lordo.totale)
+prophet_df$Festivo_New_1 <- train$Festivo_New_1
+prophet_df$Weekend_New_1 <- train$Weekend_New_1
+
+# creo il modello
+model_prophet <- prophet()
+model_prophet <- add_regressor(model_prophet, name = 'Festivo_New_1')
+model_prophet <- add_regressor(model_prophet, name = 'Weekend_New_1')
+#gli do in input modello+prophet df che sarebbe il datafreme creato prima con data e lordo fino all'ultima data di train (circa la 400)
+model_prophet <- fit.prophet(model_prophet, prophet_df)
+
+
+# Converto in dummy 0,1
+#filtered_df <- dummy_cols(filtered_df, select_columns = c("Festivo", "Weekend"), remove_first_dummy = TRUE)
+
+
+
+# Creating the future dataframe with correct columns:
+future_dates <- make_future_dataframe(model_prophet, periods = nrow(test))
+future <- merge(future_dates, filtered_df_00[, c("date", "Festivo_New_1", "Weekend_New_1")], 
+                by.x = "ds", by.y = "date", all.x = TRUE)
+
+# gli do in input il future giusto
+forecasts_prophet <- predict(model_prophet, future)
+
+
+train_rmse <- sqrt(mean((train_vendite - forecasts_prophet$yhat[1:train_size])^2))
+print(paste("Training Set RMSE for Prophet:", train_rmse))
+test_rmse <- sqrt(mean((test_vendite - forecasts_prophet$yhat[(train_size + 1):(train_size + length(test_vendite))])^2))
+print(paste("Test Set RMSE for Prophet:", test_rmse))
+residuals_train <- train_vendite - forecasts_prophet$yhat[1:train_size]
+ljung_box_train <- Box.test(residuals_train)
+print(ljung_box_train)
+
+```
+
+## 3.1 PROPHET
+
+```{r}
+filtered_df <- filtered_df[order(filtered_df$date), ]
+
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+
+
+prophet_df <- data.frame(ds = train$date, y = train$lordo.totale)
+set.seed(13)
+model_prophet <- prophet(prophet_df)
+future <- make_future_dataframe(model_prophet, periods = nrow(test))
+forecasts_prophet <- predict(model_prophet, future)
+print("Training Set Accuracy Metrics for Prophet:")
+accuracy(forecasts_prophet$yhat[1:nrow(train)], train$lordo.totale)
+print("Test Set Accuracy Metrics for Prophet:")
+accuracy(forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)], test$lordo.totale)
+train_rmse <- sqrt(mean((train$lordo.totale - forecasts_prophet$yhat[1:nrow(train)])^2))
+print(paste("Training Set RMSE for Prophet:", train_rmse))
+test_rmse <- sqrt(mean((test$lordo.totale - forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)])^2))
+print(paste("Test Set RMSE for Prophet:", test_rmse))
+
+vendite_ts <- ts(filtered_df$lordo.totale, frequency=7) # Assumendo una frequenza settimanale
+train_vendite <- vendite_ts[1:train_size]
+test_vendite <- vendite_ts[(train_size + 1):length(vendite_ts)]
+
+
+residuals_train <- train_vendite - forecasts_prophet$yhat[1:train_size]
+
+# Apply the Ljung-Box test on the residuals
+ljung_box_train <- Box.test(residuals_train)
+
+# Print results of the Ljung-Box test
+print(ljung_box_train)
+
+```
+
+## 3.2 PROPHET with dummy days
+
+```{r}
+prophet_df <- data.frame(ds = filtered_df$date[1:train_size], y = train_vendite)
+prophet_df <- cbind(prophet_df, train_dumday)
+model_prophet <- prophet()
+for (col in colnames(train_dumday)) {
+    model_prophet <- add_regressor(model_prophet, name = col)
+}
+set.seed(3)
+model_prophet <- fit.prophet(model_prophet, prophet_df)
+future <- make_future_dataframe(model_prophet, periods = length(test_vendite))
+weekdays_future <- weekdays(as.Date(future$ds))
+for (col in colnames(train_dumday)) {
+    day_name <- gsub("Giorno_", "", col)
+    future[, col] <- ifelse(weekdays_future == day_name, 1, 0)
+}
+forecasts_prophet <- predict(model_prophet, future)
+accuracy(forecasts_prophet$yhat[1:train_size], train_vendite)
+print("Test Set Accuracy Metrics for Prophet:")
+accuracy(forecasts_prophet$yhat[(train_size + 1):(train_size + length(test_vendite))], test_vendite)
+library(prophet)
+
+train_rmse <- sqrt(mean((train_vendite - forecasts_prophet$yhat[1:train_size])^2))
+print(paste("Training Set RMSE for Prophet:", train_rmse))
+test_rmse <- sqrt(mean((test_vendite - forecasts_prophet$yhat[(train_size + 1):(train_size + length(test_vendite))])^2))
+print(paste("Test Set RMSE for Prophet:", test_rmse))
+
+
+
+
+residuals_train <- train_vendite - forecasts_prophet$yhat[1:train_size]
+
+# Apply the Ljung-Box test on the residuals
+ljung_box_train <- Box.test(residuals_train)
+
+# Print results of the Ljung-Box test
+print(ljung_box_train)
+
+```
+
+```{r}
+prophet_df
+```
+
+## 3.3 Rolling Origin PROPHET
+
+```{r}
+
+
+library(forecast)  # Make sure to load the 'forecast' package if not already loaded
+
+h_values <- c( 7, 14, 30)  # Prediction horizons
+results <- data.frame(Holt_Winters_Rmse=numeric(length(h_values)), Holt_Winters_Mape=numeric(length(h_values)))  # Dataframe to store RMSE results
+rownames(results) <- h_values
+
+for (h in h_values) {
+  errors <- numeric(nrow(filtered_df) - initial_train_length - h + 1)
+  mape <- numeric(nrow(filtered_df) - initial_train_length - h + 1)
+  
+  for (t in seq_len(nrow(filtered_df) - initial_train_length - h + 1)) {
+
+    train_subset <- filtered_df$lordo.totale[1:(initial_train_length + t - 1)]
+
+    train_ts_subset <- ts(train_subset, frequency=7)
+    
+    test_start <- initial_train_length + t
+    test_end <- test_start + h - 1
+    
+    tr_df <-filtered_df[1:(initial_train_length + t - 1),]
+    tst_df <- filtered_df[(initial_train_length + t ):test_end,]
+    
+    actual <- filtered_df$lordo.totale[test_start:test_end]
+    
+    prophet_df <- data.frame(ds = tr_df$date, y = tr_df$lordo.totale)
+    set.seed(13)
+    model_prophet <- prophet(prophet_df)
+
+    future <- make_future_dataframe(model_prophet, periods = nrow(tst_df))
+    forecasts_prophet <- predict(model_prophet, future)
+
+    # hw_model <- HoltWinters(train_ts_subset, seasonal="additive")
+    # forecasts_hw <- forecast(hw_model, h=h)
+    predicted <- forecasts_prophet$yhat[(nrow(tr_df)+1):nrow(forecasts_prophet)]
+    # Calculate the forecasting error for this iteration
+    errors[t] <- sqrt(mean((actual - predicted)^2))
+    mape[t] <- sqrt(mean((actual - predicted)^2))
+  }
+  
+  # Calculate the average RMSE from cross-validation for the specific horizon h
+  average_rmse <- mean(errors, na.rm=TRUE)
+  average_mape <- mean(mape, na.rm=TRUE)
+  results[as.character(h), "Prophet_Rmse"] <- average_rmse
+  results[as.character(h), "Prophet_Mape"] <- average_mape
+}
+
+# Print the results dataframe
+print(results)
+```
+
+```{r}
+result <- rolling_forecast_function(filtered_df, model_type = "prophet", h = c(7,14,23,70), origins = 10, )
+
+result <- result[[1]]
+forecasts <- result[[2]]
+model <- result[[3]]
+
+print(paste("Results: ", result))
+
+ 
+result
+```
+
+```{r}
+library(forecast)
+library(ggplot2)
+prediction_start_date <- as.Date("2019-09-09")
+prediction_end_date <- as.Date("2020-05-18")
+
+prediction_data <- plot_df[plot_df$date >= prediction_start_date & plot_df$date <= prediction_end_date, ]
+
+red_line_start_date <- as.Date("2020-03-1")
+
+red_line_data <- prediction_data[prediction_data$date >= red_line_start_date, ]
+
+data <- ts(filtered_df$lordo.totale, frequency = 7)
+
+result <- rolling_forecast_function(data, model_type = "holt-winters", h = c(1,7,14,21,70), origins = 1, regressors = NULL)
+
+results <- result[[1]]
+forecasts <- result[[2]]
+covid_model <- result[[3]]
+
+forecast_result <- forecast(covid_model, h = nrow(red_line_data))
+
+forecast_values <- forecast_result$mean
+
+plot_data <- data.frame(date = prediction_data$date, actual = prediction_data$lordo.totale)
+
+plot_data$forecasted <- NA
+plot_data$forecasted[plot_data$date >= red_line_start_date] <- forecast_values
+
+library(ggplot2)
+ggplot(plot_data, aes(x = date)) +
+  geom_line(aes(y = actual), color = "#0047AB", size = 0.5) +
+  geom_line(aes(y = forecasted), color = "orange", size = 0.5) +
+  labs(title = "Actual vs. Forecasted Lordo Totale",
+       x = "Date",
+       y = "Lordo Totale") +
+  theme_minimal() +
+  scale_color_manual(values = c("Actual" = "#0047AB", "Forecasted" = "red")) +
+  guides(color = guide_legend(title = "Legend"))
+
+
+sum_of_forecasts <- sum(forecast_values, na.rm = TRUE)
+
+cat("Fatturato stimato in assenza di covid:", sum_of_forecasts, "\n")
+```
+
+```{r}
+
+
+# Create a dataframe for forecasted values
+forecast_df <- data.frame(ds = forecasts_prophet$ds, forecast = forecasts_prophet$yhat)
+# Convert the 'ds' column to Date type
+forecast_df$ds <- as.Date(forecast_df$ds)
+
+forecast_df <- cbind(forecast_df, test_vendite)
+
+# Find the last date of historical data
+last_date_historical <- prophet_df$ds[length(prophet_df$ds)]
+
+# Plot historical sales first, then forecasted values
+library(ggplot2)
+ggplot() +
+  geom_line(data = prophet_df, aes(x = ds, y = y), color = "blue", linetype = "solid") +
+  geom_line(data = forecast_df, aes(x = ds, y = test), color = "blue", linetype = "solid") +
+  geom_line(data = forecast_df, aes(x = ds, y = ifelse(ds > last_date_historical, forecast, NA)), color = "red", linetype = "dashed") +
+  labs(x = "Date", y = "Sales", title = "Historical Sales and Forecast using Prophet") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red")) +
+  guides(color = guide_legend(title = NULL)) +
+  theme(legend.position = "bottom")  # Place the legend at the bottom
+
+
+
+
+
+
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+
+```
+
+# 4. TBAtS
+
+```{r}
+
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+
+train_ts <- ts(train$lordo.totale, frequency=7)
+set.seed(1)
+model_tbats <- tbats(train_ts)
+print("TBATS Model Summary:")
+summary(model_tbats)
+forecasts_tbats <- forecast(model_tbats, h=nrow(test))
+plot(forecasts_tbats)
+print("Test Set Accuracy Metrics for TBATS:")
+accuracy(forecasts_tbats$mean, test$lordo.totale)
+rmse_value_tbats <- sqrt(mean((test$lordo.totale - forecasts_tbats$mean)^2))
+print(paste("RMSE on the test set using TBATS:", rmse_value_tbats))
+checkresiduals(model_tbats)
+combined_data <- data.frame(
+  Time = 1:length(test$lordo.totale),
+  Actual = test$lordo.totale,
+  Predicted = forecasts_tbats$mean
+)
+ggplot(combined_data, aes(x=Time)) +
+  geom_line(aes(y=Actual, color="Actual")) +
+  geom_line(aes(y=Predicted, color="Predicted")) +
+  labs(y="Values", x="Time", title="Actual vs. Predicted Values", color="Legend") +
+  theme_minimal()
+```
+
+## 4.1 Rolling Forecasting Origin TBAtS
+
+```{r}
+result <- rolling_forecast_function(data, model_type = "tbats", h = c(7,14,23,70), origins = 10, regressors = NULL)
+
+result <- result[[1]]
+forecasts <- result[[2]]
+model <- result[[3]]
+
+print(paste("Results: ", result))
+
+ 
+result
+```
+
+```{r}
+
+forecasts_tbats <- forecast(model, h=nrow(test))
+
+combined_data <- data.frame(
+  Time = 1:length(test$lordo.totale),
+  Actual = test$lordo.totale,
+  Predicted = forecasts_tbats$mean
+)
+ggplot(combined_data, aes(x=Time)) +
+  geom_line(aes(y=Actual, color="Actual")) +
+  geom_line(aes(y=Predicted, color="Predicted")) +
+  labs(y="Values", x="Time", title="Actual vs. Predicted Values", color="Legend") +
+  theme_minimal()
+```
+
+```{r}
+library(forecast)
+library(forecast)
+library(doParallel)
+library(pbapply)
+cl <- makeCluster(detectCores() - 1)  # Use all cores except one
+registerDoParallel(cl)
+h_values <- c(1, 7, 14, 21, 28, 35, 42, 49, 63, 73) 
+results <- data.frame(tbas=numeric(length(h_values)))
+rownames(results) <- h_values
+for (h in h_values) {
+  # Using pblapply for parallel processing with a progress bar
+  errors <- pblapply(seq_len(nrow(filtered_df) - initial_train_length - h + 1), function(t) {
+    train_subset <- filtered_df$lordo.totale[1:(initial_train_length + t - 1)]
+    
+    tbas_model <- tbats(train_subset, seasonal.periods=7)
+    forecasts_tb <- forecast(tbas_model, h=h)
+    
+    predicted <- forecasts_tb$mean
+    actual <- filtered_df$lordo.totale[(initial_train_length + t):(initial_train_length + t + h - 1)]
+    
+    return(sqrt(mean((actual - predicted)^2)))
+  })
+  
+  average_rmse <- mean(unlist(errors), na.rm=TRUE)
+  results[as.character(h), "tbas"] <- average_rmse
+}
+
+print(results)
+stopCluster(cl)
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+the `TBATS` method, as implemented in the `forecast` package in R, does not accept external regressors like dummy variables. This is primarily because `TBATS` was designed to handle multiple seasonalities internally without the need for external regressors
+
+# 5. ETS
+
+<https://otexts.com/fpp2/estimation-and-model-selection.html> how to use the model guide
+
+lambda Box-Cox transformation parameter. It will be ignored if lambda=NULL (the default value). Otherwise, the time series will be transformed before the model is estimated. When lambda is not NULL, additive.only is set to TRUE. biasadj If TRUE and lambda is not NULL, then the back-transformed fitted values and forecasts will be bias-adjusted
+
+```{r}
+
+# Ensure the forecast package is loaded
+library(forecast)
+
+# Convert the training data to a time series object with a frequency of 7 (assuming you've already done this)
+train_ts <- ts(train$lordo.totale, frequency=7)
+model_ets <- ets(train_ts, model="ZZZ")#, damped=NULL, lambda=TRUE,allow.multiplicative.trend=TRUE,biasadj=TRUE)
+print("ETS Model Summary:")
+summary(model_ets)
+forecasts_ets <- forecast(model_ets, h=nrow(test))
+plot(forecasts_ets)
+print("Test Set Accuracy Metrics for ETS:")
+accuracy(forecasts_ets$mean, test$lordo.totale)
+
+# Calculate RMSE for the test set using ETS
+rmse_value_ets <- sqrt(mean((test$lordo.totale - forecasts_ets$mean)^2))
+print(paste("RMSE on the test set using ETS:", rmse_value_ets))
+
+# Create a combined data frame with actual and predicted values
+combined_data <- data.frame(
+  Time = 1:length(test$lordo.totale),
+  Actual = test$lordo.totale,
+  Predicted = forecasts_ets$mean
+)
+checkresiduals(model_ets)
+# Plot using ggplot2
+library(ggplot2)
+
+ggplot(combined_data, aes(x=Time)) +
+  geom_line(aes(y=Actual, color="Actual")) +
+  geom_line(aes(y=Predicted, color="Predicted")) +
+  labs(y="Values", x="Time", title="Actual vs. Predicted Values", color="Legend") +
+  theme_minimal()
+
+```
+
+```{r}
+# Consider a model with additive error, trend, and seasonality
+model_ets_manual <- ets(train_ts, model="AAN")
+summary(model_ets_manual)
+forecasts_ets_manual <- forecast(model_ets_manual, h=nrow(test))
+print("Test Set Accuracy Metrics for Manual ETS:")
+accuracy(forecasts_ets_manual$mean, test$lordo.totale)
+
+# Check residuals
+checkresiduals(model_ets_manual)
+
+# Calculate RMSE for the test set using manual ETS
+rmse_value_ets_manual <- sqrt(mean((test$lordo.totale - forecasts_ets_manual$mean)^2))
+print(paste("RMSE on the test set using Manual ETS:", rmse_value_ets_manual))
+
+```
+
+## 5.1 Rolling forecasting origin ETS
+
+```{r}
+result <- rolling_forecast_function(data, model_type = "ets", h = c(7,14,23,70), origins = 20, regressors = NULL)
+
+result <- result[[1]]
+forecasts <- result[[2]]
+model <- result[[3]]
+
+print(paste("Results: ", result))
+
+ 
+result
+```
+
+# 6. Holt-Winters
+
+```{r}
+hw_model <- HoltWinters(train_ts, seasonal="additive")
+
+# Print model summary
+print("Holt-Winters Model Summary:")
+summary(hw_model)
+
+# Forecast using the trained model for the test set
+forecasts_hw <- forecast(hw_model, h=nrow(test))
+
+# Print accuracy metrics on the test set
+print("Test Set Accuracy Metrics for Holt-Winters:")
+accuracy(forecasts_hw$mean, test$lordo.totale)
+checkresiduals(hw_model)
+# Calculate RMSE for the test set
+rmse_value_hw <- sqrt(mean((test$lordo.totale - forecasts_hw$mean)^2))
+
+
+
+
+library(forecast)  # Make sure to load the 'forecast' package if not already loaded
+
+h_values <- c(70)  # Prediction horizons
+results <- data.frame(Holt_Winters_Rmse=numeric(length(h_values)), Holt_Winters_Mape=numeric(length(h_values)))  # Dataframe to store RMSE results
+rownames(results) <- h_values
+
+for (h in h_values) {
+  errors <- numeric(nrow(filtered_df) - initial_train_length - h + 1)
+  mape <- numeric(nrow(filtered_df) - initial_train_length - h + 1)
+  
+  for (t in seq_len(nrow(filtered_df) - initial_train_length - h + 1)) {
+    train_subset <- filtered_df$lordo.totale[1:(initial_train_length + t - 1)]
+    train_ts_subset <- ts(train_subset, frequency=7)
+    
+    test_start <- initial_train_length + t
+    test_end <- test_start + h - 1
+    actual <- filtered_df$lordo.totale[test_start:test_end]
+    
+    hw_model <- HoltWinters(train_ts_subset, seasonal="additive")
+    forecasts_hw <- forecast(hw_model, h=h)
+    predicted <- forecasts_hw$mean
+    
+    # Calculate the forecasting error for this iteration
+    errors[t] <- sqrt(mean((actual - predicted)^2))
+    mape[t] <- mean(abs((actual - predicted) / actual)) * 100
+
+  }
+  
+  # Calculate the average RMSE from cross-validation for the specific horizon h
+  average_rmse <- mean(errors, na.rm=TRUE)
+  average_mape <- mean(mape, na.rm=TRUE)
+  results[as.character(h), "Holt_Winters_Rmse"] <- average_rmse
+  results[as.character(h), "Holt_Winters_Mape"] <- average_mape
+}
+
+# Print the results dataframe
+print(results)
+
+```
+
+```{r}
+print(paste("RMSE on the test set for Holt-Winters:", rmse_value_hw)) 
+```
+
+TEST Rolling origin 
+
+"Rolling Forecast Origin" o "Sliding Window Cross-Validation". 
+
+```{r}
+library(forecast)
+
+h_values <- c(1, 7, 14, 21, 28, 35, 42, 49, 63, 73)  # Orizzonti di previsione
+results <- data.frame(Holt_Winters=numeric(length(h_values)))  # Dataframe per memorizzare i risultati RMSE
+rownames(results) <- h_values
+
+for (h in h_values) {
+  initial_train_length <- nrow(filtered_df_04) - h
+  errors <- numeric(nrow(filtered_df_04) - initial_train_length - h + 1)
+  
+  for (t in seq_len(nrow(filtered_df_04) - initial_train_length - h + 1)) {
+    train_subset <- filtered_df_04$lordo.totale[1:(initial_train_length + t - 1)]
+    train_ts_subset <- ts(train_subset, frequency=7)
+    
+    hw_model <- HoltWinters(train_ts_subset, seasonal="additive")
+    forecasts_hw <- forecast(hw_model, h=h)
+    
+    predicted <- forecasts_hw$mean
+    actual <- filtered_df_04$lordo.totale[(test$lordo.totale + t):(test$lordo.totale + t + h - 1)]
+    
+    # Calculate the forecasting error for this iteration
+    errors[t] <- sqrt(mean((actual - predicted)^2))
+  }
+  
+  # Calculate the average RMSE from cross-validation for the specific horizon h
+  average_rmse <- mean(errors, na.rm=TRUE)
+  results[as.character(h), "Holt_Winters"] <- average_rmse
+}
+
+# Print the results dataframe
+print(results)
+
+
+```
+
+```{r}
+library(forecast)
+
+# Definisci il tuo train_ts originale (se non è già stato fatto)
+train_ts <- ts(filtered_df$lordo.totale[1:initial_train_length], frequency=7)
+
+h_values <- c(7,14,23,70)  # Orizzonti di previsione
+results <- data.frame(Holt_Winters=numeric(length(h_values)))  # Dataframe per memorizzare i risultati RMSE
+rownames(results) <- h_values
+
+# Addestra il modello solo una volta sui dati di training originale
+hw_model <- HoltWinters(train_ts, seasonal="additive")
+
+for (h in h_values) {
+  forecasts_hw <- forecast(hw_model, h=h)
+  
+  if ((initial_train_length + h) <= nrow(filtered_df)) {
+    predicted <- forecasts_hw$mean[1:h]
+    actual <- filtered_df$lordo.totale[(initial_train_length + 1):(initial_train_length + h)]
+    
+    # Calcola l'errore di previsione per questo orizzonte
+    rmse <- sqrt(mean((actual - predicted)^2))
+    results[as.character(h), "Holt_Winters"] <- rmse
+  }
+}
+
+# Stampa il dataframe dei risultati
+print(results)
+ 
+
+```
+
+## 6.1 Rolling forecasting origin Holt-Winters
+
+```{r}
+data <- ts(filtered_df$lordo.totale, frequency = 7)
+
+result <- rolling_forecast_function_1(data_04, model_type = "holt-winters", h = c(1,7,14,21,70), origins = 20, regressors = NULL)
+
+results <- result[[1]]
+forecasts <- result[[2]]
+covid_model <- result[[3]]
+
+print(paste("Results: ", result))
+
+ 
+results
+```
+
+```{r}
+data <- ts(filtered_df$lordo.totale, frequency = 7)
+
+result <- rolling_forecast_function_1(data, model_type = "holt-winters", h = c(1,7,14,21,70), origins = 10, regressors = NULL)
+
+results <- result[[1]]
+forecasts <- result[[2]]
+covid_model <- result[[3]]
+
+print(paste("Results: ", result))
+
+ 
+results
+```
+
+```{r}
+call = 'predict(HoltWinters(ts(data, frequency = 7), seasonal = "additive"))'
+ourValue <- 'pred'
+rr= ro(data, h = 70, origins = 10, call = call, ourValue= ourValue)
+print(rr)
+```
+
+```{r}
+rr$pred
+```
+
+# 7. GAMLSS
+
+```{r}
+
+library(mgcv)
+
+# Sort your dataframe by date
+filtered_df <- filtered_df[order(filtered_df$date), ]
+
+# Create a numeric index for the dates
+date_index <- 1:nrow(filtered_df)
+
+# Split data into train and test sets
+train_size <- floor(0.8 * nrow(filtered_df))
+train_index <- 1:train_size
+test_index <- (train_size + 1):nrow(filtered_df)
+
+# Fit the GAM model
+model_gam <- gam(lordo.totale ~ s(date_index), data = filtered_df[train_index, ])
+
+# Summary of the model
+summary(model_gam)
+
+
+# Predict on train and test sets
+train$predicted <- predict(gam_model, newdata=train)
+test$predicted <- predict(gam_model, newdata=test)
+
+# Calculate residuals for train set
+residuals_train <- train$lordo.totale - train$predicted
+
+# Plot residuals
+plot(residuals_train, type="l", main="Residuals from GAM model", ylab="Residual", xlab="Time")
+
+# Check for autocorrelation in residuals using ACF
+acf(residuals_train)
+
+# Accuracy metrics for train and test sets
+print("Training Set Accuracy Metrics for GAM:")
+train_accuracy <- sqrt(mean((train$lordo.totale - train$predicted)^2))
+print(paste("Training Set RMSE for GAM:", train_accuracy))
+
+print("Test Set Accuracy Metrics for GAM:")
+test_accuracy <- sqrt(mean((test$lordo.totale - test$predicted)^2))
+print(paste("Test Set RMSE for GAM:", test_accuracy))
+
+# Apply the Ljung-Box test on the residuals
+ljung_box_train <- Box.test(residuals_train, lag=7)
+print(ljung_box_train)
+
+```
+
+-----------------------------DELETED MODEL
+
+# 8. Bayesian models
+
+```{r}
+colnames(filtered_df)
+```
+
+```{r}
+library(rstanarm)
+library(dplyr)
+
+# Add a 1-day lag to lordo.totale
+filtered_df$lordo.totale_lag1 <- lag(filtered_df$lordo.totale, 1)
+
+# Handle the NA value in the first row (due to the lag)
+filtered_df <- filtered_df[-1, ]
+
+# Split the data
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+
+set.seed(1)
+# Fit a Bayesian linear regression model with Giorno and the lagged value as predictors
+initial_model<-stan_glm(lordo.totale ~ Giorno, data = train)
+#final_model <- step(initial_model, direction = "both")
+
+predictions <- predict(initial_model, newdata = test)
+
+
+RMSE <- sqrt(mean((predictions - test$lordo.totale)^2))
+print(paste("RMSE: ",RMSE))
+
+# Calculate residuals
+residuals <- test$lordo.totale - predictions
+
+# Perform the Ljung-Box test
+ljung_box_test <- Box.test(residuals, lag = 7, type = "Ljung-Box")
+print(ljung_box_test)
+```
+
+###8.0 Rolling Origin
+
+```{r}
+library(rstanarm)
+
+h_values <- c(1, 7, 14, 28, 42, 56, 72, 74)  # Forecast horizons
+results <- data.frame(Bayesian_LR=numeric(length(h_values)))  # Dataframe to store RMSE results
+rownames(results) <- h_values
+
+for (h in h_values) {
+  errors <- numeric(nrow(filtered_df) - initial_train_length - h + 1)
+  
+  for (t in seq_len(nrow(filtered_df) - initial_train_length - h + 1)) {
+    train_subset <- filtered_df[1:(initial_train_length + t - 1), ]
+    
+    # Fit the Bayesian linear regression model
+    model <- stan_glm(lordo.totale ~ Giorno, data = train_subset)
+    
+    test_subset <- filtered_df[(initial_train_length + t):(initial_train_length + t + h - 1), ]
+    predictions <- predict(model, newdata = test_subset)
+    
+    actual <- test_subset$lordo.totale
+    
+    # Calculate the forecasting error for this iteration
+    errors[t] <- sqrt(mean((actual - predictions)^2))
+  }
+  
+  # Calculate the average RMSE from cross-validation for the specific horizon h
+  average_rmse <- mean(errors, na.rm=TRUE)
+  results[as.character(h), "Bayesian_LR"] <- average_rmse
+}
+
+# Print the results dataframe
+print(results)
+
+```
+
+### 8.1 Model with lag day + dummy day
+
+good performance and residuals ok
+
+```{r}
+
+
+
+filtered_df$lordo.totale_lag1 <- lag(filtered_df$lordo.totale, 1)
+# Handle the NA value in the first row (due to the lag)
+filtered_df <- filtered_df[-1, ]
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+set.seed(1)
+# Fit a Bayesian linear regression model with Giorno and the lagged value as predictors
+model_bayesian_with_lag <- stan_glm(lordo.totale ~ Giorno + lordo.totale_lag1, data = train)
+predictions <- predict(model_bayesian_with_lag, newdata = test, type="response")
+RMSE <- sqrt(mean((predictions - test$lordo.totale)^2))
+print(RMSE)
+residuals <- test$lordo.totale - predictions
+ljung_box_test <- Box.test(residuals, lag = 7, type = "Ljung-Box")
+print(ljung_box_test)
+
+```
+
+```{r}
+colnames(df)
+```
+
+### 8.2 LAG,1,2,7+ DUMMY
+
+```{r}
+library(rstanarm)
+library(dplyr)
+
+# Add lagged variables
+filtered_df <- filtered_df %>%
+  mutate(
+    lordo.totale_lag1 = lag(lordo.totale, 1),
+    lordo.totale_lag2 = lag(lordo.totale, 2),
+    lordo.totale_lag7 = lag(lordo.totale, 7)
+  )
+
+# Encode Giorno as weekend or not, assuming 6 and 7 represent weekend days.
+# filtered_df$Weekend <- ifelse(filtered_df$Giorno %in% c(6, 7), 1, 0)
+
+
+
+# Split the data
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+
+set.seed(1)
+
+# Fit a Bayesian linear regression model with Giorno, multiple lags and possibly weekend
+model_bayesian_with_lags <- stan_glm(lordo.totale ~ Giorno +Festivo_New+Festivo_or_Weekend_New+ Weekend_New+Season+ lordo.totale_lag1 + lordo.totale_lag2 + lordo.totale_lag7, 
+                                     data = train)
+
+# Predict on the test set
+predictions <- predict(model_bayesian_with_lags, newdata = test)
+
+# Compute RMSE
+RMSE <- sqrt(mean((predictions - test$lordo.totale)^2))
+print(RMSE)
+
+# Calculate residuals
+residuals <- test$lordo.totale - predictions
+
+# Perform the Ljung-Box test
+ljung_box_test <- Box.test(residuals, lag = 7, type = "Ljung-Box")
+print(ljung_box_test)
+
+
+```
+
+```{r}
+plot(model_bayesian_with_lags)
+summary(model_bayesian_with_lags)
+
+```
+
+```{r}
+library(rstanarm)
+
+summary(model_bayesian_with_lags)
+
+
+```
+
+# 9. (?) UCM (DELETED)
+
+
+```{r}
+filtered_df$lordototale <- as.numeric(as.character(filtered_df$lordo.totale))
+filtered_df$lordototale[is.na(filtered_df$lordototale)] <- filtered_df$lordototale
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+ucm_model <- function(data) {
+  model <- SSModel(lordototale ~ SSMtrend(1, Q = list(NA)) + 
+                   SSMseasonal(7, Q = NA), 
+                   data = data)
+  fit <- fitSSM(model, inits = rep(0, 8)) 
+  kfs_result <- KFS(fit$model)
+  return(list(fitted = kfs_result$alphahat[1,], model = fit$model))
+}
+ucm_train <- ucm_model(train)
+forecast_length <- nrow(test)
+forecast_results <- predict(ucm_train$model, n.ahead = forecast_length)
+rmse_val <- sqrt(mean((test$lordototale - forecast_results)^2))
+print(paste("RMSE on the test set:", rmse_val))
+
+```
+
+```{r}
+# Forecast horizons
+h_values <- c(1, 7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 74)
+results <- data.frame(UCM = numeric(length(h_values)))
+rownames(results) <- h_values
+
+# Initial training size (excluding the portion reserved for cross-validation)
+initial_train_length <- train_size - max(h_values)
+
+# Cross-validation loop
+pb <- txtProgressBar(min = 0, max = length(h_values), style = 3)  # Initialize progress bar
+
+for (h in h_values) {
+  errors <- numeric(nrow(filtered_df) - initial_train_length - h + 1)
+  
+  for (t in seq_len(nrow(filtered_df) - initial_train_length - h + 1)) {
+    train_subset <- filtered_df$lordototale[1:(initial_train_length + t - 1)]
+    
+    ucm_train_sub <- ucm_model(data.frame(lordototale = train_subset))
+    forecast_results <- predict(ucm_train_sub$model, n.ahead = h)
+    
+    predicted <- forecast_results['mean']
+    actual <- filtered_df$lordototale[(initial_train_length + t):(initial_train_length + t + h - 1)]
+    
+    # Forecasting error for this iteration
+    errors[t] <- sqrt(mean((actual - predicted)^2))
+  }
+  
+  # Average RMSE for horizon h
+  results[as.character(h), "UCM"] <- mean(errors, na.rm = TRUE)
+  
+  setTxtProgressBar(pb, which(h_values == h))  # Update progress bar
+}
+
+close(pb)  # Close progress bar
+
+# Print the results
+print(results)
+
+```
+
+
+```{r}
+library(KFAS)
+
+# Data transformation
+filtered_df$lordototale <- as.numeric(as.character(filtered_df$lordo.totale))
+filtered_df$lordototale[is.na(filtered_df$lordototale)] <- filtered_df$lordototale
+
+# Split data
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+
+# UCM function
+ucm_model <- function(data) {
+  # Using a second-order trend and trigonometric weekly seasonality
+  model <- SSModel(lordototale ~ SSMtrend(2, Q = list(NA, NA)) + 
+                   SSMseasonal(7, Q = NA, sea.type = "trigonometric"),
+                   data = data)
+  
+  # Determine the number of parameters based on the model components
+  num_params <- sum(3, 6)  # 3 for trend, 6 for trigonometric weekly seasonality
+  fit <- fitSSM(model, inits = rep(0, num_params))
+  
+  kfs_result <- KFS(fit$model)
+  return(list(fitted = kfs_result$alphahat[1,], model = fit$model))
+}
+
+# Train and forecast
+ucm_train <- ucm_model(train)
+forecast_length <- nrow(test)
+forecast_results <- predict(ucm_train$model, n.ahead = forecast_length)
+
+# Residual analysis
+residuals <- test$lordototale - forecast_results
+acf(residuals)
+
+# RMSE calculation
+rmse_val <- sqrt(mean(residuals^2))
+print(paste("RMSE on the test set:", rmse_val))
+
+```
+
+```{r}
+
+```
+
+# 10. Random Forest
+
+```{r}
+
+
+#CONVERIOne in numeric
+
+filtered_df$Giorno <- as.factor(filtered_df$Giorno)
+filtered_df$Weekend_New_Numeric <- ifelse(filtered_df$Weekend_New == "True", 1, 0)
+
+# Splitting data
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+
+train_data <- data.frame(lordototale = train$lordototale, 
+                         Weekend_New_Numeric = train$Weekend_New_Numeric,
+                         Giorno = train$Giorno)
+test_data <- data.frame(lordototale = test$lordototale, 
+                        Weekend_New_Numeric = test$Weekend_New_Numeric,
+                        Giorno = test$Giorno)
+rf_model <- randomForest(lordototale ~ ., data = train_data)
+
+
+predictions <- predict(rf_model, newdata = test_data)
+
+rmse_val <- sqrt(mean((test$lordototale - predictions)^2))
+print(paste("RMSE on the test set:", rmse_val))
+
+```
+
+```{r}
+library(randomForest)
+filterted_df <- filtered_df_04
+dummy_days <- model.matrix(~Giorno-1, data=filtered_df)
+dummy_season <- model.matrix(~Season-1, data=filtered_df)
+filtered_df$Festivo_New_Numeric <- ifelse(filtered_df$Festivo_New == "True", 1, 0)
+filtered_df$Weekend_New_Numeric <- ifelse(filtered_df$Weekend_New == "True", 1, 0)
+filtered_df$Festivo_or_Weekend_New_Numeric <- ifelse(filtered_df$Festivo_or_Weekend_New == "True", 1, 0)
+filtered_df <- cbind(filtered_df, dummy_days, dummy_season)
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+predictor_vars <- c("Festivo_New_Numeric", "Weekend_New_Numeric", colnames(dummy_days), colnames(dummy_season))
+formula <- as.formula(paste("lordo.totale ~", paste(predictor_vars, collapse="+")))
+rf_model <- randomForest(formula, data=train, ntree=500, importance = TRUE)
+predictions <- predict(rf_model, newdata = test)
+
+
+
+
+
+
+rmse_val <- sqrt(mean((test$lordototale - predictions)^2))
+print(paste("RMSE on the test set:", rmse_val))
+feat_importance <- importance(rf_model)
+feat_importance
+```
+
+```{r}
+typeof(rf_model)
+varImpPlot(rf_model)
+rf_model
+```
+
+```{r}
+dummy_days <- model.matrix(~Giorno-1, data=filtered_df)
+dummy_season <- model.matrix(~Season-1, data=filtered_df)
+
+
+filtered_df$Festivo_New_Numeric <- ifelse(filtered_df$Festivo_New == "True", 1, 0)
+filtered_df$Weekend_New_Numeric <- ifelse(filtered_df$Weekend_New == "True", 1, 0)
+filtered_df$Festivo_or_Weekend_New_Numeric <- ifelse(filtered_df$Festivo_or_Weekend_New == "True", 1, 0)
+
+
+filtered_df <- cbind(filtered_df, dummy_days, dummy_season)
+
+
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+predictor_vars <- c("Festivo_New_Numeric", "Weekend_New_Numeric", "Festivo_or_Weekend_New_Numeric", colnames(dummy_days), colnames(dummy_season))
+set.seed(123)
+rf_model <- randomForest(lordototale ~ ., data=train[, c("lordototale", predictor_vars)], ntree=500)
+
+
+
+
+predictions <- predict(rf_model, newdata = test)
+
+
+
+rmse_val <- sqrt(mean((test$lordototale - predictions)^2))
+print(paste("RMSE on the test set:", rmse_val))
+importance(rf_model)
+
+```
+
+```{r}
+# Using tuneRF to get an optimal mtry value
+optimal_mtry <- tuneRF(train[, predictor_vars], train$lordototale, stepFactor=1.5, plot=TRUE, ntreeTry=100, trace=TRUE, improve=0.05)[1, 1]
+set.seed(123)
+rf_tuned_model <- randomForest(lordototale ~ ., data=train[, c("lordototale", predictor_vars)], ntree=500, mtry=optimal_mtry)
+
+# Forecasting on the test set with the tuned model
+tuned_predictions <- predict(rf_tuned_model, newdata = test)
+
+# RMSE Calculation for the tuned model
+rmse_val_tuned <- sqrt(mean((test$lordototale - tuned_predictions)^2))
+print(paste("RMSE on the test set (tuned model):", rmse_val_tuned))
+
+# Variable importance for the tuned model
+importance(rf_tuned_model)
+
+```
+
+## 10.1 Optimized Random Forest: dummy + hyperparameter tuning
+
+dopo la grid seach usiamo il modello con i parametri migliori, il rmse è la media dei rmse per ogni porzione della cross validation
+
+```{r}
+
+X <- filtered_df %>% select(Giorno, Festivo_New, Weekend_New, Festivo_or_Weekend_New)
+y <- filtered_df$lordo.totale
+
+# Encode categorical variables
+X$Giorno <- as.factor(X$Giorno)
+X$Festivo_or_Weekend_New <- as.factor(X$Festivo_or_Weekend_New)
+
+# Time series cross-validation
+tscv_folds <- seq(1, nrow(X), length.out=6)
+rmse_scores <- c()
+
+for (i in 2:length(tscv_folds)) {
+  train_indices <- 1:(tscv_folds[i] - 1)
+  test_indices <- tscv_folds[i-1]:tscv_folds[i]
+  
+  X_train <- X[train_indices,]
+  y_train <- y[train_indices]
+  X_test <- X[test_indices,]
+  y_test <- y[test_indices]
+  
+  rf_model <- randomForest(lordo.totale ~ ., data=data.frame(lordo.totale=y_train, X_train),
+                           ntree=282, mtry=2, nodesize=5, maxnodes=29, replace=FALSE)
+
+  predictions <- predict(rf_model, newdata=X_test)
+
+  rmse <- sqrt(mean((y_test - predictions)^2))
+  rmse_scores <- c(rmse_scores, rmse)
+}
+
+average_rmse <- mean(rmse_scores)
+print(average_rmse)
+```
+
+## 10.2 Random Forest day + week NEW
+
+```{r}
+# FACCIO UN ENCODING IN QUESTO MODO, AS.FACTOR PER FARE FUNIZIOANRE MEGLIO IL MODELLO
+filtered_df$Giorno <- as.factor(filtered_df$Giorno)
+filtered_df$Weekend_New <- as.factor(filtered_df$Weekend_New)
+
+# 
+
+set.seed(1)
+train_indices <- sample(1:nrow(filtered_df), 0.8 * nrow(filtered_df))
+train_df <- filtered_df[train_indices, ]
+test_df <- filtered_df[-train_indices, ]
+
+
+
+rf_model <- randomForest(lordo.totale ~ Giorno + Weekend_New, data=train_df)
+
+
+
+
+
+predictions <- predict(rf_model, newdata=test_df)
+rmse <- sqrt(mean((test_df$lordo.totale - predictions)^2))
+print(rmse)
+```
+
+```{r}
+filtered_df$Giorno <- as.factor(filtered_df$Giorno)
+filtered_df$Weekend_New <- as.factor(filtered_df$Weekend_New)
+train_control <- trainControl(method = "cv", number = 10, savePredictions = "final")
+model_cv <- train(
+  lordo.totale ~ Giorno + Weekend_New, 
+  data = filtered_df, 
+  method = "rf", 
+  trControl = train_control
+)
+
+# Extract RMSE values from each fold
+rmse_values <- model_cv$resample$RMSE
+# Calculate the average RMSE
+average_rmse <- mean(rmse_values)
+print(average_rmse)
+model_cv
+
+```
+
+Random Forests, being an ensemble of decision trees, inherently work well with categorical variables. When a variable is treated as a factor (or a categorical variable) in Random Forest, the decision trees split on the categories of the variable, which can provide several advantages:
+
+```         
+Direct Interpretability: Treating a variable as a factor allows the algorithm to make splits directly on the categories of that variable. This can be more interpretable since it's clear that a split is being made based on the category itself rather than a numerical value that has been assigned to it.
+
+Avoids Arbitrary Encoding: When encoding categorical variables into numerical values (like 0, 1, 2, etc.), the order and value of the encoding can be arbitrary. For example, assigning 0 to "cat" and 1 to "dog" is arbitrary and could just as easily be reversed. This can sometimes introduce unintended ordinal relationships where none exist. Trees might interpret the encoded numerical values as ordinal data, which can lead to suboptimal splits.
+
+Handles Multi-category Variables: Factors in R can have more than two levels. If a categorical variable has several categories, representing it as a factor ensures that Random Forest can still find the best splits across any of the categories without being limited by binary encoding.
+
+Efficiency: When a variable is treated as categorical, the tree doesn't need to check every possible split point as it would with a continuous variable. Instead, it evaluates splits among the categories, which can be computationally more efficient.
+
+Avoids Overfitting: Numerical encoding can sometimes lead to overfitting, especially if the number of categories is large. This is because the model may end up finding patterns in the specific numbers used for encoding, rather than in the actual categorical values they represent.
+
+Integrates Interaction Effects: Trees can inherently model interactions between variables. When categorical variables are used directly, interactions between categories can be naturally integrated into the model without the need for explicit interaction terms.
+```
+
+In summary, Random Forests are well-suited to handle categorical variables directly without the need for numerical encoding. This maintains the interpretability of the model and can lead to more accurate and robust predictions.
+
+## 10.3 Random Forest LAG 1+7
+
+```{r}
+
+filtered_df$lag_1 <- lag(filtered_df$lordo.totale, 1)
+filtered_df$lag_7 <- lag(filtered_df$lordo.totale, 7)
+filtered_df <- filtered_df[8:nrow(filtered_df), ]
+train_size <- floor(0.8 * nrow(filtered_df))
+train <- filtered_df[1:train_size, ]
+test <- filtered_df[(train_size + 1):nrow(filtered_df), ]
+rf_model <- randomForest(lordo.totale ~ lag_1 + lag_7, data = train)
+predictions <- predict(rf_model, newdata = test)
+rmse_val <- sqrt(mean((test$lordo.totale - predictions)^2))
+print(paste("RMSE on the test set:", rmse_val))
+```
+
+```{r}
+filtered_df
+```
+
+```{r}
+filtered_df
+```
+
+## 10.4 Rolling forecast origin on Random Forest Lag 1+7
+
+```{r}
+
+result <- rolling_forecast_function(data=filtered_df %>% filter( ristorante == 'R000'), model_type = "random.forest", h = c(70), origins = 1, regressors = NULL)
+
+results <- result[[1]]
+forecasts <- result[[2]]
+covid_model <- result[[3]]
+
+print(paste("Results: ", result))
+
+ 
+results
+```
+
+```{r}
+varImpPlot(covid_model)
+# Assuming your variable importance plot data frame is named 'var_imp_df'
+rownames(covid_model$importance) <- c("Day", "Weekend (Boolean)", "Holiday or Weekend", "Lag 7", "Lag 2", "Lag 1")
+
+# Now create the variable importance plot
+varImpPlot(covid_model, main = "Feature Importance Random Forest", pch = 19, col = "blue", cex = 1.5)
+```
+
+## Random Forest results
+
+```{r}
+filtered_df_res$lag_1 <- lag(filtered_df_res$lordo.totale, 1)
+filtered_df_res$lag_7 <- lag(filtered_df_res$lordo.totale, 7)
+filtered_df_res$lag_2 <- lag(filtered_df_res$lordo.totale, 2)
+
+filtered_df$lag_1 <- lag(filtered_df$lordo.totale, 1)
+filtered_df$lag_7 <- lag(filtered_df$lordo.totale, 7)
+filtered_df$lag_2 <- lag(filtered_df$lordo.totale, 2)
+filtered_df
+filtered_df_res <- filtered_df_res[-(1:7), ]
+filtered_df_res <- na.omit(filtered_df_res)
+
+filtered_df <- filtered_df[-(1:7), ]
+filtered_df <- na.omit(filtered_df)
+
+
+```
+
+```{r}
+library(randomForest)
+library(dplyr)
+
+# Adjust the size of the plotting device
+options(repr.plot.width = 8, repr.plot.height = 6)
+
+r <- c("R000", "R001", "R002", "R003", "R004", "R005")
+
+# Create a layout with 2 columns and 3 rows
+par(mfrow = c(3, 2))
+
+# Set smaller margins
+par(mar = c(2.5, 2.5, 2.5, 2.5))
+
+for (re in r) {
+  
+  d <- filtered_df %>%
+    filter(ristorante == re & lordo.totale != 0)
+  
+  train_size <- floor(0.8 * nrow(d))
+  train_set <- d[1:train_size, ]
+  test_set <- d[(train_size + 1):nrow(d), ]
+
+  model <- randomForest(lordo.totale ~ Giorno + Weekend_New + Festivo_or_Weekend_New + lag_7 + lag_2 + lag_1, data = train_set)
+  print(paste("Feature Importance ", re, ": "))
+  print(model$importance)
+  # Assuming your variable importance plot data frame is named 'var_imp_df'
+  #rownames(model$importance) <- c("Day", "Weekend", "Holiday or Weekend", "Lag 7", "Lag 2", "Lag 1")
+
+  # Now create the variable importance plot
+  #varImpPlot(model, main = paste(re), pch = 19, col = "orange", cex = 1.5)
+}
+
+# Reset the layout and margins to the default
+par(mfrow = c(1, 1))
+par(mar = c(5, 4, 4, 2) + 0.1)
+
+model$importance
+```
+
+#Propher rolling origin
+
+```{r}
+# Assuming r is a vector of restaurant names
+r <- c("R000","R001", "R002", "R003", "R004", "R005")
+r <- c("R004")
+plot_list <- list()
+layout_matrix <- matrix(1:length(r), ncol = 3, byrow = TRUE)
+
+for (re in r) {
+  
+  d <- filtered_df %>%
+    filter(ristorante == re & lordo.totale != 0)
+  
+  result <- rolling_forecast_function(data=d, model_type = "prophet", h = c(7,14,30), origins = 5, regressors = NULL)
+
+  results <- result[[1]]
+  forecasts <- result[[2]]
+  covid_model <- result[[3]]
+  
+  #print(paste("Results: ", result))
+
+  #results
+    # Print the RMSE
+  print(paste("Restaurant:",re))
+  print(results)
+  #print(paste("Mean in predicted period:", mean(forecasts)))
+  #print(paste("Total in predicted period:", mean(forecasts) *70))
+
+}
+
+
+```
+
+#PROPHET RESULTS
+
+```{r}
+
+library("MLmetrics")
+library(Metrics) 
+
+for (re in r) {
+  d <- filtered_df %>%
+    filter(ristorante == re & lordo.totale != 0)
+
+    train_size <- floor(0.8 * nrow(d))
+    train <- d[1:train_size, ]
+    test <- d[(train_size + 1):nrow(d), ]
+    # Convert the training data to a time series object with a frequency of 7 (weekly seasonality)
+    train_ts <- ts(train$lordo.totale, frequency=7)
+    prophet_df <- data.frame(ds = train$date, y = train$lordo.totale)
+    set.seed(13)
+    model_prophet <- prophet(prophet_df)
+    future <- make_future_dataframe(model_prophet, periods = nrow(test))
+    forecasts_prophet <- predict(model_prophet, future)
+    
+    
+    accuracy(forecasts_prophet$yhat[1:nrow(train)], train$lordo.totale)
+    accuracy(forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)], test$lordo.totale)
+    train_rmse <- sqrt(mean((train$lordo.totale - forecasts_prophet$yhat[1:nrow(train)])^2))
+    test_rmse <- sqrt(mean((test$lordo.totale - forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)])^2))
+    test_mape<- mean(abs((test$lordo.totale - forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)]) / test$lordo.totale), na.rm = TRUE) * 100
+    print(paste("RMSE on the test set:", test_rmse))
+    print(paste("MAPE on the test set:", test_mape))
+    print(paste("RMSE on the test set:", rmse(test$lordo.totale, forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)])))
+    print(paste("MAPE on the test set:", MAPE(test$lordo.totale, forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)])))
+    accuracy(forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)], test$lordo.totale)
+
+
+  print(paste("Mean in predicted period:", mean(forecasts_prophet$yhat[1:nrow(train)])))
+  print(paste("Total in predicted period:", mean(forecasts_prophet$yhat[1:nrow(train)]) *70))
+
+}
+```
+
+#ETS RESULTS
+
+```{r}
+
+library("MLmetrics")
+library(Metrics) 
+
+for (re in r) {
+  d <- filtered_df %>%
+    filter(ristorante == re & lordo.totale != 0)
+
+    train_size <- floor(0.8 * nrow(d))
+    train <- d[1:train_size, ]
+    test <- d[(train_size + 1):nrow(d), ]
+    # Convert the training data to a time series object with a frequency of 7 (weekly seasonality)
+    train_ts <- ts(train$lordo.totale, frequency=7)
+model_ets <- ets(train_ts, model="ZZZ")#, damped=NULL, lambda=TRUE,allow.multiplicative.trend=TRUE,biasadj=TRUE)
+print("ETS Model Summary:")
+summary(model_ets)
+forecasts_ets <- forecast(model_ets, h=nrow(test))
+plot(forecasts_ets)
+print("Test Set Accuracy Metrics for ETS:")
+accuracy(forecasts_ets$mean, test$lordo.totale)
+
+# Calculate RMSE for the test set using ETS
+rmse_value_ets <- sqrt(mean((test$lordo.totale - forecasts_ets$mean)^2))
+print(paste("RMSE on the test set using ETS:", rmse_value_ets))
+mape_test_ets <- mean(abs((test$lordo.totale - forecasts_ets$mean) / test$lordo.totale)) * 100
+
+print(paste("MAPE on the test set using ETS:", mape_test_ets))
+
+
+  print(paste("Mean in predicted period:", mean(forecasts_ets$mean)))
+  print(paste("Total in predicted period:", mean(forecasts_ets$mean)*70))
+
+}
+```
+
+#TBATS RESULTS
+
+```{r}
+
+library("MLmetrics")
+library(Metrics) 
+
+for (re in r) {
+  d <- filtered_df %>%
+    filter(ristorante == re & lordo.totale != 0)
+
+    train_size <- floor(0.8 * nrow(d))
+    train <- d[1:train_size, ]
+    test <- d[(train_size + 1):nrow(d), ]
+    # Convert the training data to a time series object with a frequency of 7 (weekly seasonality)
+train_ts <- ts(train$lordo.totale, frequency=7)
+set.seed(1)
+model_tbats <- tbats(train_ts)
+print("TBATS Model Summary:")
+summary(model_tbats)
+forecasts_tbats <- forecast(model_tbats, h=nrow(test))
+# Calculate RMSE for the test set using ETS
+rmse_value_ets <- sqrt(mean((test$lordo.totale - forecasts_tbats$mean)^2))
+print(paste("RMSE on the test set using ETS:", rmse_value_ets))
+mape_test_ets <- mean(abs((test$lordo.totale - forecasts_tbats$mean) / test$lordo.totale)) * 100
+
+print(paste("MAPE on the test set using ETS:", mape_test_ets))
+
+
+  print(paste("Mean in predicted period:", mean(forecasts_tbats$mean)))
+  print(paste("Total in predicted period:", mean(forecasts_tbats$mean)*70))
+
+}
+```
+
+#BAYESIAN MODELS RESULTS
+
+```{r}
+
+for (re in r) {
+
+filtered_df <- filtered_df %>%
+  mutate(
+    lordo.totale_lag1 = lag(lordo.totale, 1),
+    lordo.totale_lag2 = lag(lordo.totale, 2),
+    lordo.totale_lag7 = lag(lordo.totale, 7)
+  )
+  d <- filtered_df %>%
+    filter(ristorante == re & lordo.totale != 0)
+
+# Encode Giorno as weekend or not, assuming 6 and 7 represent weekend days.
+# filtered_df$Weekend <- ifelse(filtered_df$Giorno %in% c(6, 7), 1, 0)
+
+
+
+# Split the data
+    train_size <- floor(0.8 * nrow(d))
+    train <- d[1:train_size, ]
+    test <- d[(train_size + 1):nrow(d), ]
+set.seed(1)
+
+# Fit a Bayesian linear regression model with Giorno, multiple lags and possibly weekend
+model_bayesian_with_lags <- stan_glm(lordo.totale ~ Giorno +Festivo_New+Festivo_or_Weekend_New+ Weekend_New+Season+ lordo.totale_lag1 + lordo.totale_lag2 + lordo.totale_lag7, 
+                                     data = train)
+
+# Predict on the test set
+predictions <- predict(model_bayesian_with_lags, newdata = test)
+
+# Compute RMSE
+RMSE <- sqrt(mean((predictions - test$lordo.totale)^2))
+
+# Calculate RMSE for the test set using ETS
+rmse_value_ets <- sqrt(mean((predictions - test$lordo.totale)^2))
+print(paste("RMSE on the test set using ETS:", rmse_value_ets))
+mape_test_ets <- mean(abs((test$lordo.totale - predictions) / test$lordo.totale)) * 100
+
+print(paste("MAPE on the test set using ETS:", mape_test_ets))
+
+
+  print(paste("Mean in predicted period:", mean(predictions)))
+  print(paste("Total in predicted period:", mean(predictions)*70))
+
+}
+
+predictions
+```
+
+```{r}
+g = forecasts_prophet$yhat[nrow(train) : length(forecasts_prophet$yhat)]
+g[1]
+g = g[2:length(g)]
+g  
+MAPE(g, test$lordo.totale)
+
+rmse(test$lordo.totale, g)
+
+ 
+mean(abs((test$lordo.totale - forecasts_prophet$yhat[(nrow(train)+1):nrow(forecasts_prophet)]) / test$lordo.totale), na.rm = TRUE) * 100
+
+```
+
+# Visualizations
+
+```{r}
+filtered_df %>%
+  filter(lordo.totale == 0.00)
+
+df %>%
+  mutate(lordo.totale = ifelse(lordo.totale == 0, mean(lordo.totale, na.rm = TRUE), lordo.totale))
+tes
+```
+
+```{r}
+
+# Assuming filtered_df$lordo.totale is numeric
+filtered_df$date <- as.Date(filtered_df$date, format = "%d/%m/%y")
+
+# Create a blue line plot
+plot(filtered_df$date, filtered_df$lordo.totale, type = "l", col = "blue", xlab = "Date", ylab = "Lordo Totale", main = "Blue Line Plot")
+
+
+
+```
+
+```{r}
+# Assuming your time series data is stored in filtered_df
+filtered_df$date <- as.Date(filtered_df$date, format = "%d/%m/%y")
+ts_data <- ts(filtered_df$lordo.totale, start = min(filtered_df$date), end = max(filtered_df$date), frequency = 7)  # Assuming daily data
+
+# Load the forecast package if not already loaded
+# install.packages("forecast")
+library(forecast)
+
+# Create a date range for prediction
+pred_start_date <- as.Date("2020-02-19")
+pred_end_date <- as.Date("2020-05-04")
+
+# Make predictions using the SARIMA model
+forecast_values <- forecast(model, h = length(seq(pred_start_date, pred_end_date, by = "days")))
+
+# Plot the observed data and the forecast
+plot(ts_data, xlim = c(min(filtered_df$date), pred_end_date), ylim = c(0, max(ts_data, forecast_values$upper)), xlab = "Date", ylab = "Lordo Totale", main = "SARIMA Forecast")
+lines(forecast_values$mean, col = "blue")
+lines(forecast_values$upper, col = "red", lty = 2)
+lines(forecast_values$lower, col = "red", lty = 2)
+legend("topright", legend = c("Observed", "Forecast", "95% Prediction Interval"), col = c("black", "blue", "red"), lty = c(1, 1, 2))
+
+```
+
+#00. Plot
+
+```{r}
+
+# Load necessary libraries
+library(forecast)
+library(ggplot2)
+prediction_start_date <- as.Date("2019-09-09")
+prediction_end_date <- as.Date("2020-05-18")
+
+prediction_data <- plot_df[plot_df$date >= prediction_start_date & plot_df$date <= prediction_end_date, ]
+
+red_line_start_date <- as.Date("2020-03-1")
+
+red_line_data <- prediction_data[prediction_data$date >= red_line_start_date, ]
+
+forecast_result <- forecast(covid_model, h = nrow(red_line_data))
+
+forecast_values <- forecast_result$mean
+
+plot_data <- data.frame(date = prediction_data$date, actual = prediction_data$lordo.totale)
+
+plot_data$forecasted <- NA
+plot_data$forecasted[plot_data$date >= red_line_start_date] <- forecast_values
+
+library(ggplot2)
+ggplot(plot_data, aes(x = date)) +
+  geom_line(aes(y = actual), color = "#0047AB", size = 0.5) +
+  geom_line(aes(y = forecasted), color = "orange", size = 0.5) +
+  labs(title = "Actual vs. Forecasted Lordo Totale",
+       x = "Date",
+       y = "Lordo Totale") +
+  theme_minimal() +
+  scale_color_manual(values = c("Actual" = "#0047AB", "Forecasted" = "red")) +
+  guides(color = guide_legend(title = "Legend"))
+
+
+sum_of_forecasts <- sum(forecast_values, na.rm = TRUE)
+mean_of_forecasts <- mean(forecast_values, na.rm = TRUE)
+
+cat("Fatturato stimato in assenza di covid:", sum_of_forecasts, "\n")
+cat("Media giornaliera persa stimata in assenza di covid:", mean_of_forecasts, "\n")
+```
