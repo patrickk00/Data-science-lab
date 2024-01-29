@@ -1,4 +1,4 @@
-# Data-science-lab
+# Time series analysis project
 
 The proposed project entails a thorough examination of sales trends across six restaurants in the
 Lombardy and Emilia-Romagna regions, covering the period from September 2018 to April 2023.
